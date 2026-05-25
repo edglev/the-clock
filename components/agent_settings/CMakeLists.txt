@@ -1,0 +1,5 @@
+idf_component_register(
+    SRCS "agent_settings.cpp"
+    INCLUDE_DIRS "."
+    REQUIRES lvgl__lvgl agent_ble waveshare__esp32_s3_touch_amoled_1_75
+)

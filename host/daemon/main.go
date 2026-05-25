@@ -19,7 +19,8 @@ const (
 	stateUUID  = "de900002-4467-42f0-a359-000000000000"
 	statsUUID  = "de900003-4467-42f0-a359-000000000000"
 	actionUUID = "de900004-4467-42f0-a359-000000000000"
-	udpAddr    = "127.0.0.1:50005"
+	nameUUID   = "de900005-4467-42f0-a359-000000000000"
+	sockPath   = "/tmp/agent-viewer.sock"
 )
 
 var eventToState = map[string]byte{
@@ -35,6 +36,7 @@ var (
 	stateCh   bluetooth.DeviceCharacteristic
 	statsCh   bluetooth.DeviceCharacteristic
 	actionCh  bluetooth.DeviceCharacteristic
+	nameCh    bluetooth.DeviceCharacteristic
 	connected bool
 	connMu    sync.RWMutex
 )
@@ -96,6 +98,7 @@ func connectLoop() {
 	stUUID, _ := bluetooth.ParseUUID(stateUUID)
 	stsUUID, _ := bluetooth.ParseUUID(statsUUID)
 	actUUID, _ := bluetooth.ParseUUID(actionUUID)
+	nmUUID, _ := bluetooth.ParseUUID(nameUUID)
 
 	for {
 		connMu.RLock()
@@ -170,6 +173,14 @@ func connectLoop() {
 
 		ac.EnableNotifications(onAction)
 
+		chars, err = svc.DiscoverCharacteristics([]bluetooth.UUID{nmUUID})
+		if err == nil && len(chars) > 0 {
+			nc := chars[0]
+			hostname, _ := os.Hostname()
+			nc.Write([]byte(hostname))
+			fmt.Printf("[ble] sent hostname: %s\n", hostname)
+		}
+
 		connMu.Lock()
 		stateCh = sc
 		statsCh = ssc
@@ -184,31 +195,41 @@ func connectLoop() {
 	}
 }
 
-func udpServer() {
-	addr, _ := net.ResolveUDPAddr("udp", udpAddr)
-	conn, err := net.ListenUDP("udp", addr)
+func unixServer() {
+	os.Remove(sockPath)
+	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
-		panic(fmt.Sprintf("udp listen failed: %v", err))
+		panic(fmt.Sprintf("unix listen failed: %v", err))
 	}
-	defer conn.Close()
-	fmt.Printf("[udp] listening on %s\n", udpAddr)
+	defer listener.Close()
+	defer os.Remove(sockPath)
+	fmt.Printf("[unix] listening on %s\n", sockPath)
 
-	buf := make([]byte, 1024)
 	for {
-		n, _, err := conn.ReadFromUDP(buf)
+		conn, err := listener.Accept()
 		if err != nil {
 			continue
 		}
-		event := string(buf[:n])
-		fmt.Printf("[udp] event: %s\n", event)
-		if v, ok := eventToState[event]; ok {
-			go sendState(v)
-			if event == "Stop" {
-				go func() {
-					time.Sleep(2 * time.Second)
-					sendStats(readStats())
-				}()
-			}
+		go handleConn(conn)
+	}
+}
+
+func handleConn(conn net.Conn) {
+	defer conn.Close()
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return
+	}
+	event := strings.TrimSpace(string(buf[:n]))
+	fmt.Printf("[unix] event: %s\n", event)
+	if v, ok := eventToState[event]; ok {
+		go sendState(v)
+		if event == "Stop" {
+			go func() {
+				time.Sleep(2 * time.Second)
+				sendStats(readStats())
+			}()
 		}
 	}
 }
@@ -227,7 +248,7 @@ func statsSync() {
 func main() {
 	fmt.Println("=== Agent Viewer Daemon ===")
 	adapter.Enable()
-	go udpServer()
+	go unixServer()
 	go statsSync()
 	connectLoop()
 }

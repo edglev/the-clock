@@ -66,13 +66,13 @@ The screen is a **466×466 circular AMOLED**. The corners of the square coordina
 ## Architecture
 
 ```
-┌─────────────────┐     UDP IPC       ┌──────────────────┐    BLE GATT    ┌──────────────────┐
+┌─────────────────┐   Unix socket    ┌──────────────────┐    BLE GATT    ┌──────────────────┐
 │  AI Agent CLI   │ ────────────────▶  │  agent-ble-daemon│ ────────────▶ │  ESP32-S3        │
-│  (lifecycle     │   localhost:50005  │  (Go, Linux)     │               │  NimBLE Server   │
-│   hooks)        │                    │                  │               │  +               │
+│  (lifecycle     │   /tmp/agent-     │  (Go, Linux)     │               │  NimBLE Server   │
+│   hooks)        │   viewer.sock     │                  │               │  +               │
 │                 │                    │  reads            │               │  LVGL UI         │
 │  agent-hook     │                    │  stats/           │               │  + AXP2101 PMIC  │
-│  (Go, UDP)      │                    │  codex data       │               │                  │
+│  (Go, Unix)     │                    │  codex data       │               │                  │
 └─────────────────┘                    └──────────────────┘               └──────────────────┘
 ```
 
@@ -84,52 +84,22 @@ The screen is a **466×466 circular AMOLED**. The corners of the square coordina
 | **Stats** | `00000000-0000-a359-42f0-4467de900003` | Host → ESP32 | UTF-8 string ≤24 chars | Token/cost HUD |
 | **Action** | `00000000-0000-a359-42f0-4467de900004` | ESP32 → Host | 1 byte: 1=ACK | Touch acknowledgment |
 
-## Quick Start
+## Build & Flash
 
-### 1. Flash the Firmware
+### Prerequisites
 
-**Prerequisites:** ESP-IDF v6.0.1 installed.
+- **ESP-IDF v6.0.1** ([setup guide](https://docs.espressif.com/projects/esp-idf/en/v6.0.1/esp32s3/get-started/index.html))
+
+### Firmware
 
 ```bash
-cd firmware
 idf.py set-target esp32s3
 idf.py build
 idf.py -p PORT flash
+idf.py -p PORT monitor
 ```
 
-Replace `PORT` with your device's serial port (e.g., `COM3` on Windows, `/dev/ttyUSB0` on Linux).
 
-### 2. Build the Host Daemon (Linux)
-
-```bash
-cd host
-go build -o agent-ble-daemon daemon/main.go
-go build -o agent-hook hook/main.go
-sudo setcap cap_net_admin+eip agent-ble-daemon
-```
-
-### 3. Configure Agent Hooks
-
-Copy `host/settings_snippet.json` into your AI agent's configuration (e.g., Claude Code's `settings.json`) and update the paths to point to the compiled `agent-hook` binary.
-
-### 4. Run
-
-```bash
-./agent-ble-daemon
-```
-
-The daemon scans for "Agent-Viewer" BLE peripheral, connects, and listens for UDP events from the hook utility.
-
-## Testing BLE (Windows)
-
-```bash
-pip install bleak
-python host/ble_test.py
-```
-
-Interactive commands: `0`=IDLE, `1`=THINKING, `2`=WAITING, `3`=SUCCESS, `q`=quit.
-
-Cycle through all states: `python host/ble_test.py --cycle`
 
 ## Project Structure
 
@@ -143,10 +113,6 @@ waveshare-clock/
 │   ├── agent_ble/              # NimBLE GATT server
 │   ├── agent_pmic/             # AXP2101 PMIC driver
 │   └── agent_viewer/           # LVGL UI (main + settings screens)
-├── host/                       # Linux Go utilities
-│   ├── daemon/main.go          # BLE GATT client + UDP IPC
-│   ├── hook/main.go            # CLI: sends events via UDP
-│   ├── ble_test.py             # Windows BLE test script
-│   └── settings_snippet.json   # Claude hook configuration
+├── host/                       # PC-side utilities (Go daemon, BLE test)
 └── managed_components/         # BSP, LVGL, etc. (auto-managed)
 ```

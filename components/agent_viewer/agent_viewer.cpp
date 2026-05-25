@@ -9,6 +9,7 @@
 #include "agent_ble.hpp"
 #include "agent_pmic.hpp"
 #include "agent_viewer.hpp"
+#include "agent_settings.hpp"
 
 static const char *TAG = "agent_viewer";
 
@@ -25,9 +26,6 @@ static lv_obj_t *status_ring;
 static lv_obj_t *tileview;
 static lv_obj_t *tile_agent;
 static lv_obj_t *tile_settings;
-static lv_obj_t *label_ble_status;
-static lv_obj_t *label_brightness_val;
-static int current_brightness = 100;
 
 static float pulse_val = 0.0f;
 static float pulse_dir = 0.02f;
@@ -155,17 +153,6 @@ static void update_header(void)
 
 static void tap_cb(lv_event_t *e) { agent_ble_notify_action(1); }
 
-static void brightness_slider_cb(lv_event_t *e)
-{
-    lv_obj_t *slider = (lv_obj_t *)lv_event_get_target(e);
-    int val = lv_slider_get_value(slider);
-    current_brightness = val;
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%d%%", val);
-    lv_label_set_text(label_brightness_val, buf);
-    bsp_display_brightness_set(val);
-}
-
 static void timer_cb(lv_timer_t *t)
 {
     pulse_val += pulse_dir;
@@ -188,11 +175,7 @@ static void timer_cb(lv_timer_t *t)
 
     update_canvas();
     update_header();
-
-    if (label_ble_status) {
-        lv_label_set_text(label_ble_status, g_ble_connected ? "Connected" : "Disconnected");
-        lv_obj_set_style_text_color(label_ble_status, g_ble_connected ? lv_color_hex(0x00FF00) : lv_color_hex(0xFF0000), 0);
-    }
+    agent_settings_timer_update();
 }
 
 static void create_page_agent(lv_obj_t *tile)
@@ -250,48 +233,6 @@ static void create_page_agent(lv_obj_t *tile)
     lv_obj_align(label_stats, LV_ALIGN_BOTTOM_MID, 0, -40);
 }
 
-static void create_page_settings(lv_obj_t *tile)
-{
-    lv_obj_t *title = lv_label_create(tile);
-    lv_label_set_text(title, "Settings");
-    lv_obj_set_style_text_color(title, lv_color_hex(0x00FFFF), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
-
-    lv_obj_t *bright_label = lv_label_create(tile);
-    lv_label_set_text(bright_label, "Brightness");
-    lv_obj_set_style_text_color(bright_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(bright_label, &lv_font_montserrat_16, 0);
-    lv_obj_align(bright_label, LV_ALIGN_TOP_MID, -100, 80);
-
-    label_brightness_val = lv_label_create(tile);
-    lv_label_set_text(label_brightness_val, "100%");
-    lv_obj_set_style_text_color(label_brightness_val, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(label_brightness_val, &lv_font_montserrat_16, 0);
-    lv_obj_align(label_brightness_val, LV_ALIGN_TOP_MID, 100, 80);
-
-    lv_obj_t *slider = lv_slider_create(tile);
-    lv_obj_set_size(slider, 360, 20);
-    lv_obj_align(slider, LV_ALIGN_TOP_MID, 0, 115);
-    lv_slider_set_range(slider, 0, 100);
-    lv_slider_set_value(slider, current_brightness, LV_ANIM_OFF);
-    lv_obj_add_event_cb(slider, brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_set_style_bg_color(slider, lv_color_hex(0x333333), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(slider, lv_color_hex(0x00FFFF), LV_PART_INDICATOR);
-
-    lv_obj_t *bt_label = lv_label_create(tile);
-    lv_label_set_text(bt_label, "Bluetooth");
-    lv_obj_set_style_text_color(bt_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(bt_label, &lv_font_montserrat_16, 0);
-    lv_obj_align(bt_label, LV_ALIGN_TOP_MID, -100, 185);
-
-    label_ble_status = lv_label_create(tile);
-    lv_label_set_text(label_ble_status, "Disconnected");
-    lv_obj_set_style_text_color(label_ble_status, lv_color_hex(0xFF0000), 0);
-    lv_obj_set_style_text_font(label_ble_status, &lv_font_montserrat_16, 0);
-    lv_obj_align(label_ble_status, LV_ALIGN_TOP_MID, 100, 185);
-}
-
 void agent_viewer_init(void)
 {
     ESP_LOGI(TAG, "Creating UI");
@@ -317,7 +258,7 @@ void agent_viewer_init(void)
     tile_settings = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_LEFT);
     lv_obj_set_style_bg_opa(tile_settings, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(tile_settings, 0, 0);
-    create_page_settings(tile_settings);
+    agent_settings_create(tile_settings);
 
     lv_obj_add_flag(tileview, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(tileview, tap_cb, LV_EVENT_CLICKED, NULL);

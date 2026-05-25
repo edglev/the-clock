@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-const udpAddr = "127.0.0.1:50005"
+const sockPath = "/tmp/agent-viewer.sock"
 
 func main() {
 	event := flag.String("event", "", "Event name (PreToolUse, Notification, Stop, SessionStart, SessionEnd)")
@@ -18,15 +18,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", udpAddr)
+	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: resolve failed: %v\n", err)
-		os.Exit(0)
-	}
-
-	conn, err := net.DialUDP("udp", nil, addr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: dial failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "warning: connect failed: %v\n", err)
 		os.Exit(0)
 	}
 	defer conn.Close()

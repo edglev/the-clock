@@ -5,5 +5,7 @@ managed_components/
 dependencies.lock
 host/agent-ble-daemon
 host/agent-hook
-host/agent-udp-test
+host/agent-hook
+host/agent-ble-daemon
+README.local.md
 .vscode
