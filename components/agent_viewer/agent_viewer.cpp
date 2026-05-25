@@ -1,4 +1,5 @@
 #include <string.h>
+#include <inttypes.h>
 #include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -21,6 +22,12 @@ static lv_obj_t *label_stats;
 static lv_obj_t *label_batt;
 static lv_obj_t *label_ble;
 static lv_obj_t *status_ring;
+static lv_obj_t *tileview;
+static lv_obj_t *tile_agent;
+static lv_obj_t *tile_settings;
+static lv_obj_t *label_ble_status;
+static lv_obj_t *label_brightness_val;
+static int current_brightness = 100;
 
 static float pulse_val = 0.0f;
 static float pulse_dir = 0.02f;
@@ -148,6 +155,17 @@ static void update_header(void)
 
 static void tap_cb(lv_event_t *e) { agent_ble_notify_action(1); }
 
+static void brightness_slider_cb(lv_event_t *e)
+{
+    lv_obj_t *slider = (lv_obj_t *)lv_event_get_target(e);
+    int val = lv_slider_get_value(slider);
+    current_brightness = val;
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d%%", val);
+    lv_label_set_text(label_brightness_val, buf);
+    bsp_display_brightness_set(val);
+}
+
 static void timer_cb(lv_timer_t *t)
 {
     pulse_val += pulse_dir;
@@ -170,18 +188,16 @@ static void timer_cb(lv_timer_t *t)
 
     update_canvas();
     update_header();
+
+    if (label_ble_status) {
+        lv_label_set_text(label_ble_status, g_ble_connected ? "Connected" : "Disconnected");
+        lv_obj_set_style_text_color(label_ble_status, g_ble_connected ? lv_color_hex(0x00FF00) : lv_color_hex(0xFF0000), 0);
+    }
 }
 
-void agent_viewer_init(void)
+static void create_page_agent(lv_obj_t *tile)
 {
-    ESP_LOGI(TAG, "Creating UI");
-
-    bsp_display_lock(0);
-
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
-
-    status_ring = lv_arc_create(scr);
+    status_ring = lv_arc_create(tile);
     lv_obj_remove_flag(status_ring, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(status_ring, 456, 456);
     lv_obj_center(status_ring);
@@ -208,33 +224,103 @@ void agent_viewer_init(void)
         lv_draw_buf_init(draw_buf, DIAL_SIZE, DIAL_SIZE, LV_COLOR_FORMAT_RGB565, stride, buf, buf_size);
     }
 
-    canvas = lv_canvas_create(scr);
+    canvas = lv_canvas_create(tile);
     lv_obj_set_size(canvas, DIAL_SIZE, DIAL_SIZE);
     lv_obj_center(canvas);
     if (draw_buf && buf) {
         lv_canvas_set_draw_buf(canvas, draw_buf);
     }
 
-    label_ble = lv_label_create(scr);
+    label_ble = lv_label_create(tile);
     lv_label_set_text(label_ble, "---");
     lv_obj_set_style_text_color(label_ble, lv_color_hex(0x888888), 0);
     lv_obj_set_style_text_font(label_ble, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(label_ble, 140, 20);
 
-    label_batt = lv_label_create(scr);
+    label_batt = lv_label_create(tile);
     lv_label_set_text(label_batt, "---");
     lv_obj_set_style_text_color(label_batt, lv_color_hex(0x888888), 0);
     lv_obj_set_style_text_font(label_batt, &lv_font_montserrat_16, 0);
     lv_obj_set_pos(label_batt, 310, 20);
 
-    label_stats = lv_label_create(scr);
+    label_stats = lv_label_create(tile);
     lv_label_set_text(label_stats, "Agent ready");
     lv_obj_set_style_text_color(label_stats, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(label_stats, &lv_font_montserrat_20, 0);
     lv_obj_align(label_stats, LV_ALIGN_BOTTOM_MID, 0, -40);
+}
 
-    lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(scr, tap_cb, LV_EVENT_CLICKED, NULL);
+static void create_page_settings(lv_obj_t *tile)
+{
+    lv_obj_t *title = lv_label_create(tile);
+    lv_label_set_text(title, "Settings");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
+
+    lv_obj_t *bright_label = lv_label_create(tile);
+    lv_label_set_text(bright_label, "Brightness");
+    lv_obj_set_style_text_color(bright_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(bright_label, &lv_font_montserrat_16, 0);
+    lv_obj_align(bright_label, LV_ALIGN_TOP_MID, -100, 80);
+
+    label_brightness_val = lv_label_create(tile);
+    lv_label_set_text(label_brightness_val, "100%");
+    lv_obj_set_style_text_color(label_brightness_val, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(label_brightness_val, &lv_font_montserrat_16, 0);
+    lv_obj_align(label_brightness_val, LV_ALIGN_TOP_MID, 100, 80);
+
+    lv_obj_t *slider = lv_slider_create(tile);
+    lv_obj_set_size(slider, 360, 20);
+    lv_obj_align(slider, LV_ALIGN_TOP_MID, 0, 115);
+    lv_slider_set_range(slider, 0, 100);
+    lv_slider_set_value(slider, current_brightness, LV_ANIM_OFF);
+    lv_obj_add_event_cb(slider, brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_set_style_bg_color(slider, lv_color_hex(0x333333), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(slider, lv_color_hex(0x00FFFF), LV_PART_INDICATOR);
+
+    lv_obj_t *bt_label = lv_label_create(tile);
+    lv_label_set_text(bt_label, "Bluetooth");
+    lv_obj_set_style_text_color(bt_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(bt_label, &lv_font_montserrat_16, 0);
+    lv_obj_align(bt_label, LV_ALIGN_TOP_MID, -100, 185);
+
+    label_ble_status = lv_label_create(tile);
+    lv_label_set_text(label_ble_status, "Disconnected");
+    lv_obj_set_style_text_color(label_ble_status, lv_color_hex(0xFF0000), 0);
+    lv_obj_set_style_text_font(label_ble_status, &lv_font_montserrat_16, 0);
+    lv_obj_align(label_ble_status, LV_ALIGN_TOP_MID, 100, 185);
+}
+
+void agent_viewer_init(void)
+{
+    ESP_LOGI(TAG, "Creating UI");
+
+    bsp_display_lock(0);
+
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
+
+    tileview = lv_tileview_create(scr);
+    lv_obj_remove_style_all(tileview);
+    lv_obj_set_size(tileview, 466, 466);
+    lv_obj_center(tileview);
+    lv_obj_set_style_bg_color(tileview, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(tileview, LV_OPA_COVER, 0);
+    lv_obj_set_scrollbar_mode(tileview, LV_SCROLLBAR_MODE_OFF);
+
+    tile_agent = lv_tileview_add_tile(tileview, 0, 0, LV_DIR_RIGHT);
+    lv_obj_set_style_bg_opa(tile_agent, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tile_agent, 0, 0);
+    create_page_agent(tile_agent);
+
+    tile_settings = lv_tileview_add_tile(tileview, 1, 0, LV_DIR_LEFT);
+    lv_obj_set_style_bg_opa(tile_settings, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tile_settings, 0, 0);
+    create_page_settings(tile_settings);
+
+    lv_obj_add_flag(tileview, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(tileview, tap_cb, LV_EVENT_CLICKED, NULL);
 
     lv_timer_create(timer_cb, 25, NULL);
     update_canvas();
@@ -242,4 +328,92 @@ void agent_viewer_init(void)
 
     bsp_display_unlock();
     ESP_LOGI(TAG, "UI ready");
+}
+
+static lv_obj_t *modal_cont = NULL;
+static agent_viewer_pairing_cb_t modal_cb = NULL;
+
+static void modal_accept_cb(lv_event_t *e)
+{
+    if (modal_cb) modal_cb(true);
+    agent_viewer_hide_pairing_modal();
+}
+
+static void modal_reject_cb(lv_event_t *e)
+{
+    if (modal_cb) modal_cb(false);
+    agent_viewer_hide_pairing_modal();
+}
+
+void agent_viewer_show_pairing_modal(uint32_t passkey, agent_viewer_pairing_cb_t cb)
+{
+    modal_cb = cb;
+    if (bsp_display_lock(5000) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to lock display for pairing modal");
+        return;
+    }
+
+    lv_obj_t *scr = lv_scr_act();
+    modal_cont = lv_obj_create(scr);
+    lv_obj_set_size(modal_cont, 300, 220);
+    lv_obj_center(modal_cont);
+    lv_obj_set_style_bg_color(modal_cont, lv_color_hex(0x222222), 0);
+    lv_obj_set_style_bg_opa(modal_cont, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(modal_cont, 2, 0);
+    lv_obj_set_style_border_color(modal_cont, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_border_opa(modal_cont, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(modal_cont, 12, 0);
+    lv_obj_set_style_pad_all(modal_cont, 20, 0);
+
+    lv_obj_t *title = lv_label_create(modal_cont);
+    lv_label_set_text(title, "Pairing Request");
+    lv_obj_set_style_text_color(title, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
+
+    char code[32];
+    snprintf(code, sizeof(code), "Code: %06" PRIu32, passkey);
+    lv_obj_t *code_label = lv_label_create(modal_cont);
+    lv_label_set_text(code_label, code);
+    lv_obj_set_style_text_color(code_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(code_label, &lv_font_montserrat_24, 0);
+    lv_obj_align(code_label, LV_ALIGN_TOP_MID, 0, 40);
+
+    lv_obj_t *hint = lv_label_create(modal_cont);
+    lv_label_set_text(hint, "Does this code match\nwhat's on your PC?");
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 75);
+
+    lv_obj_t *yes = lv_btn_create(modal_cont);
+    lv_obj_set_size(yes, 100, 40);
+    lv_obj_align(yes, LV_ALIGN_BOTTOM_LEFT, 20, -20);
+    lv_obj_set_style_bg_color(yes, lv_color_hex(0x007700), 0);
+    lv_obj_add_event_cb(yes, modal_accept_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *yes_l = lv_label_create(yes);
+    lv_label_set_text(yes_l, "Accept");
+    lv_obj_center(yes_l);
+
+    lv_obj_t *no = lv_btn_create(modal_cont);
+    lv_obj_set_size(no, 100, 40);
+    lv_obj_align(no, LV_ALIGN_BOTTOM_RIGHT, -20, -20);
+    lv_obj_set_style_bg_color(no, lv_color_hex(0x770000), 0);
+    lv_obj_add_event_cb(no, modal_reject_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *no_l = lv_label_create(no);
+    lv_label_set_text(no_l, "Reject");
+    lv_obj_center(no_l);
+
+    lv_obj_invalidate(scr);
+    bsp_display_unlock();
+}
+
+void agent_viewer_hide_pairing_modal(void)
+{
+    if (!modal_cont) return;
+    if (bsp_display_lock(5000) != ESP_OK) return;
+    lv_obj_del(modal_cont);
+    modal_cont = NULL;
+    modal_cb = NULL;
+    lv_obj_invalidate(lv_scr_act());
+    bsp_display_unlock();
 }

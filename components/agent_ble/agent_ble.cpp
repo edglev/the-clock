@@ -1,12 +1,15 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+
 #include "esp_log.h"
 
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
+#include "host/ble_sm.h"
+#include "agent_viewer.hpp"
 #include "agent_ble.hpp"
 
 static const char *TAG = "agent_ble";
@@ -51,7 +54,7 @@ static const struct ble_gatt_svc_def ble_gatt_svcs[] = {
 
 static int ble_gap_event(struct ble_gap_event *event, void *arg);
 
-void ble_store_config_init(void);
+extern "C" void ble_store_config_init(void);
 
 static void ble_on_reset(int reason)
 {
@@ -119,6 +122,13 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_REPEAT_PAIRING:
         ESP_LOGI(TAG, "Repeat pairing requested");
         return BLE_GAP_REPEAT_PAIRING_IGNORE;
+    case BLE_GAP_EVENT_PASSKEY_ACTION: {
+        struct ble_sm_io resp;
+        memset(&resp, 0, sizeof(resp));
+        resp.action = event->passkey.params.action;
+        ble_sm_inject_io(conn_handle, &resp);
+        return 0;
+    }
     case BLE_GAP_EVENT_ADV_COMPLETE:
         ESP_LOGI(TAG, "Adv complete");
         ble_advertise();
@@ -202,6 +212,7 @@ void agent_ble_init(void)
         return;
     }
 
+    ble_store_config_init();
     nimble_port_freertos_init(host_task);
     ble_advertise();
 }
