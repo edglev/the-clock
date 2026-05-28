@@ -9,3 +9,5 @@ host/agent-hook
 host/agent-ble-daemon
 README.local.md
 .vscode
+/host/daemon/daemon
+/host/hook/hook

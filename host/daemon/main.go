@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	svcUUID    = "de900001-4467-42f0-a359-000000000000"
-	stateUUID  = "de900002-4467-42f0-a359-000000000000"
-	statsUUID  = "de900003-4467-42f0-a359-000000000000"
-	actionUUID = "de900004-4467-42f0-a359-000000000000"
-	nameUUID   = "de900005-4467-42f0-a359-000000000000"
+	svcUUID    = "00000000-0000-a359-42f0-4467de900001"
+	stateUUID  = "00000000-0000-a359-42f0-4467de900002"
+	statsUUID  = "00000000-0000-a359-42f0-4467de900003"
+	actionUUID = "00000000-0000-a359-42f0-4467de900004"
+	nameUUID   = "00000000-0000-a359-42f0-4467de900005"
 	sockPath   = "/tmp/agent-viewer.sock"
 )
 
@@ -73,7 +73,7 @@ func sendState(v byte) {
 		return
 	}
 	fmt.Printf("[ble] state %d\n", v)
-	stateCh.Write([]byte{v})
+	stateCh.WriteWithoutResponse([]byte{v})
 }
 
 func sendStats(text string) {
@@ -83,7 +83,7 @@ func sendStats(text string) {
 		return
 	}
 	fmt.Printf("[ble] stats: %s\n", text)
-	statsCh.Write([]byte(text))
+	statsCh.WriteWithoutResponse([]byte(text))
 }
 
 func onAction(buf []byte) {
@@ -177,7 +177,7 @@ func connectLoop() {
 		if err == nil && len(chars) > 0 {
 			nc := chars[0]
 			hostname, _ := os.Hostname()
-			nc.Write([]byte(hostname))
+			nc.WriteWithoutResponse([]byte(hostname))
 			fmt.Printf("[ble] sent hostname: %s\n", hostname)
 		}
 
