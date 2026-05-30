@@ -11,22 +11,17 @@ import (
 	"time"
 )
 
-const sockPath = "/tmp/agent-viewer.sock"
-
-type hookEvent struct {
-	Event       string `json:"event"`
-	CWD         string `json:"cwd"`
-	SessionID   string `json:"session_id,omitempty"`
-	Label       string `json:"label,omitempty"`
-	TimestampMS int64  `json:"timestamp_ms"`
-}
-
-func main() {
-	event := flag.String("event", "", "Event name (PreToolUse, Notification, Stop, SessionStart, SessionEnd)")
-	cwd := flag.String("cwd", "", "Worktree path; defaults to hook cwd or Claude hook payload cwd")
-	sessionID := flag.String("session-id", "", "Optional Claude session id")
-	label := flag.String("label", "", "Optional display label")
-	flag.Parse()
+func runHook(args []string) error {
+	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
+	event := fs.String("event", "", "Event name (PreToolUse, Notification, Stop, SessionStart, SessionEnd)")
+	cwd := fs.String("cwd", "", "Worktree path; defaults to hook cwd or hook payload cwd")
+	sessionID := fs.String("session-id", "", "Optional agent session id")
+	label := fs.String("label", "", "Optional display label")
+	provider := fs.String("provider", "", "Coding CLI provider (claude or codex); defaults to claude")
+	model := fs.String("model", "", "Optional model label")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	stdinFields := readStdinJSON()
 
@@ -39,6 +34,12 @@ func main() {
 	if *sessionID == "" {
 		*sessionID = stringField(stdinFields, "session_id")
 	}
+	if *provider == "" {
+		*provider = stringField(stdinFields, "provider")
+	}
+	if *model == "" {
+		*model = stringField(stdinFields, "model")
+	}
 	if *cwd == "" {
 		var err error
 		*cwd, err = os.Getwd()
@@ -48,8 +49,7 @@ func main() {
 	}
 
 	if *event == "" {
-		fmt.Fprintln(os.Stderr, "error: --event is required")
-		os.Exit(1)
+		return fmt.Errorf("hook: --event is required")
 	}
 
 	payload := hookEvent{
@@ -57,23 +57,28 @@ func main() {
 		CWD:         *cwd,
 		SessionID:   *sessionID,
 		Label:       strings.TrimSpace(*label),
+		Provider:    normalizeProvider(*provider),
+		Model:       strings.TrimSpace(*model),
+		ToolName:    stringField(stdinFields, "tool_name"),
+		TurnID:      stringField(stdinFields, "turn_id"),
 		TimestampMS: time.Now().UnixMilli(),
 	}
 
 	data, err := json.Marshal(payload)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: marshal failed: %v\n", err)
-		os.Exit(0)
+		return nil
 	}
 
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: connect failed: %v\n", err)
-		os.Exit(0)
+		return nil
 	}
 	defer conn.Close()
 
 	conn.Write(data)
+	return nil
 }
 
 func readStdinJSON() map[string]any {

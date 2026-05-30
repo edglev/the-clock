@@ -2,7 +2,10 @@ module agent-viewer
 
 go 1.21
 
-require tinygo.org/x/bluetooth v0.9.0
+require (
+	github.com/mattn/go-sqlite3 v1.14.32
+	tinygo.org/x/bluetooth v0.9.0
+)
 
 require (
 	github.com/go-ole/go-ole v1.2.6 // indirect

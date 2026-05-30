@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/agent-hook --event Notification"
+            "command": "/absolute/path/to/agent-viewer hook --provider claude --event Notification"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/agent-hook --event PreToolUse"
+            "command": "/absolute/path/to/agent-viewer hook --provider claude --event PreToolUse"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/agent-hook --event Stop"
+            "command": "/absolute/path/to/agent-viewer hook --provider claude --event Stop"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/agent-hook --event SessionStart"
+            "command": "/absolute/path/to/agent-viewer hook --provider claude --event SessionStart"
           }
         ]
       }
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/agent-hook --event SessionEnd"
+            "command": "/absolute/path/to/agent-viewer hook --provider claude --event SessionEnd"
           }
         ]
       }

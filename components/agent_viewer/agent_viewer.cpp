@@ -23,6 +23,7 @@ static const char *TAG = "agent_viewer";
 
 static lv_obj_t *canvas;
 static lv_draw_buf_t *draw_buf;
+static lv_obj_t *label_provider;
 static lv_obj_t *label_stats;
 static lv_obj_t *label_agent_count;
 static lv_obj_t *label_batt_icon;
@@ -66,6 +67,48 @@ static lv_color_t agent_state_color(uint8_t state)
     case AGENT_STATE_SUCCESS:  return lv_color_hex(0x00FF00);
     case AGENT_STATE_IDLE:
     default:                   return lv_color_hex(0xFFFFFF);
+    }
+}
+
+static const char *provider_label(const char *provider)
+{
+    return (provider && provider[0]) ? provider : "Agent";
+}
+
+static void format_provider_summary(char *buf, size_t buf_size, const agent_instance_info_t *focused)
+{
+    if (!buf || buf_size == 0) return;
+
+    agent_instance_info_t items[AGENT_MAX_INSTANCES];
+    int count = g_ble_connected ? agent_ble_get_instances(items, AGENT_MAX_INSTANCES) : 0;
+    bool has_claude = false;
+    bool has_codex = false;
+    bool mixed = false;
+    char first[AGENT_INSTANCE_PROVIDER_LEN + 1] = "";
+
+    for (int i = 0; i < count; i++) {
+        const char *provider = provider_label(items[i].provider);
+        if (strcmp(provider, "Claude") == 0) has_claude = true;
+        if (strcmp(provider, "Codex") == 0) has_codex = true;
+
+        if (first[0] == '\0') {
+            strncpy(first, provider, sizeof(first) - 1);
+            first[sizeof(first) - 1] = '\0';
+        } else if (strcmp(first, provider) != 0) {
+            mixed = true;
+        }
+    }
+
+    if (mixed && has_claude && has_codex) {
+        snprintf(buf, buf_size, "Claude + Codex");
+    } else if (mixed) {
+        snprintf(buf, buf_size, "Mixed CLIs");
+    } else if (focused) {
+        snprintf(buf, buf_size, "%s", provider_label(focused->provider));
+    } else if (first[0]) {
+        snprintf(buf, buf_size, "%s", first);
+    } else {
+        buf[0] = '\0';
     }
 }
 
@@ -214,12 +257,19 @@ static void update_header(void)
     int count = g_ble_connected ? agent_ble_get_instance_count() : 0;
 
     if (!g_ble_connected) {
+        if (label_provider) lv_label_set_text(label_provider, "");
         lv_label_set_text(label_stats, "Waiting for connection");
         lv_obj_set_style_text_color(label_stats, lv_color_hex(0x888888), 0);
         if (label_agent_count) lv_label_set_text(label_agent_count, "");
     } else if (has_focus) {
         char text[80];
+        char provider[32];
         const char *status = focused.status[0] ? focused.status : agent_state_label(focused.state);
+        format_provider_summary(provider, sizeof(provider), &focused);
+        if (label_provider) {
+            lv_label_set_text(label_provider, provider);
+            lv_obj_set_style_text_color(label_provider, lv_color_hex(COLOR_CYAN), 0);
+        }
         snprintf(text, sizeof(text), "%s: %s", focused.label, status);
         lv_label_set_text(label_stats, text);
         lv_obj_set_style_text_color(label_stats, agent_state_color(focused.state), 0);
@@ -235,6 +285,7 @@ static void update_header(void)
             lv_obj_set_style_text_color(label_agent_count, lv_color_hex(0x888888), 0);
         }
     } else {
+        if (label_provider) lv_label_set_text(label_provider, "");
         lv_label_set_text(label_stats, "Waiting for events");
         lv_obj_set_style_text_color(label_stats, lv_color_hex(0x888888), 0);
         if (label_agent_count) {
@@ -349,6 +400,7 @@ static void update_instances_page(void)
         sig = hash_bytes(sig, items[i].id, strlen(items[i].id));
         sig = hash_bytes(sig, items[i].label, strlen(items[i].label));
         sig = hash_bytes(sig, items[i].status, strlen(items[i].status));
+        sig = hash_bytes(sig, items[i].provider, strlen(items[i].provider));
     }
     if (sig == instances_signature) return;
     instances_signature = sig;
@@ -401,10 +453,13 @@ static void update_instances_page(void)
         lv_obj_set_style_text_font(name, &lv_font_montserrat_14, 0);
         lv_obj_align(name, LV_ALIGN_TOP_LEFT, 28, 6);
 
-        char meta[64];
+        char meta[80];
         char age[12];
         format_age(items[i].updated_ms, age, sizeof(age));
-        snprintf(meta, sizeof(meta), "%s · %s", items[i].status[0] ? items[i].status : agent_state_label(items[i].state), age);
+        snprintf(meta, sizeof(meta), "%s · %s · %s",
+                 provider_label(items[i].provider),
+                 items[i].status[0] ? items[i].status : agent_state_label(items[i].state),
+                 age);
         lv_obj_t *status = lv_label_create(row);
         lv_label_set_text(status, meta);
         lv_obj_set_width(status, 250);
@@ -492,13 +547,21 @@ static void create_page_agent(lv_obj_t *tile)
         lv_canvas_set_draw_buf(canvas, draw_buf);
     }
 
+    label_provider = lv_label_create(tile);
+    lv_label_set_text(label_provider, "");
+    lv_obj_set_width(label_provider, 220);
+    lv_obj_set_style_text_align(label_provider, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label_provider, lv_color_hex(COLOR_CYAN), 0);
+    lv_obj_set_style_text_font(label_provider, &lv_font_montserrat_16, 0);
+    lv_obj_align(label_provider, LV_ALIGN_TOP_MID, 0, 28);
+
     label_agent_count = lv_label_create(tile);
     lv_label_set_text(label_agent_count, "");
     lv_obj_set_width(label_agent_count, 220);
     lv_obj_set_style_text_align(label_agent_count, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_agent_count, lv_color_hex(0x888888), 0);
     lv_obj_set_style_text_font(label_agent_count, &lv_font_montserrat_14, 0);
-    lv_obj_align(label_agent_count, LV_ALIGN_TOP_MID, 0, 48);
+    lv_obj_align(label_agent_count, LV_ALIGN_TOP_MID, 0, 52);
 
     label_stats = lv_label_create(tile);
     lv_label_set_text(label_stats, "Waiting for connection");

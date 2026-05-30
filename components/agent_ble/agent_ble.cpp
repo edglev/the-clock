@@ -108,7 +108,7 @@ static void sync_legacy_globals_locked(const agent_instance_info_t *inst)
     g_ble_stats_changed = true;
 }
 
-static void upsert_instance(const char *id, uint8_t state, const char *label, const char *status)
+static void upsert_instance(const char *id, uint8_t state, const char *label, const char *status, const char *provider)
 {
     if (!id || !id[0]) return;
     if (state > AGENT_STATE_SUCCESS) state = AGENT_STATE_IDLE;
@@ -128,6 +128,7 @@ static void upsert_instance(const char *id, uint8_t state, const char *label, co
     copy_clean(s_instances[idx].id, sizeof(s_instances[idx].id), id);
     copy_clean(s_instances[idx].label, sizeof(s_instances[idx].label), label && label[0] ? label : "Agent");
     copy_clean(s_instances[idx].status, sizeof(s_instances[idx].status), status && status[0] ? status : "Idle");
+    copy_clean(s_instances[idx].provider, sizeof(s_instances[idx].provider), provider && provider[0] ? provider : "Agent");
     s_instances[idx].state = state;
     s_instances[idx].updated_ms = updated;
     s_focused_index = idx;
@@ -160,7 +161,7 @@ static void delete_instance(const char *id)
 
 static void upsert_legacy_instance(void)
 {
-    upsert_instance("legacy", g_ble_state, s_current_peer_name[0] ? s_current_peer_name : "Agent", g_ble_stats_text);
+    upsert_instance("legacy", g_ble_state, s_current_peer_name[0] ? s_current_peer_name : "Agent", g_ble_stats_text, "Agent");
 }
 
 static void handle_multi_write(const uint8_t *data, int data_len)
@@ -187,11 +188,12 @@ static void handle_multi_write(const uint8_t *data, int data_len)
     char *state_s = strtok_r(NULL, "\t", &save);
     char *label = strtok_r(NULL, "\t", &save);
     char *status = strtok_r(NULL, "\t", &save);
+    char *provider = strtok_r(NULL, "\t", &save);
     if (!id || !state_s || !label) return;
 
     uint8_t state = (uint8_t)(state_s[0] - '0');
-    upsert_instance(id, state, label, status ? status : "");
-    ESP_LOGI(TAG, "Instance update: id=%s state=%u label=%s", id, state, label);
+    upsert_instance(id, state, label, status ? status : "", provider ? provider : "");
+    ESP_LOGI(TAG, "Instance update: id=%s state=%u label=%s provider=%s", id, state, label, provider ? provider : "");
 }
 
 static void load_bonds(void)

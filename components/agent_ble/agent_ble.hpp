@@ -25,6 +25,7 @@ extern "C" {
 #define AGENT_INSTANCE_ID_LEN 8
 #define AGENT_INSTANCE_LABEL_LEN 32
 #define AGENT_INSTANCE_STATUS_LEN 32
+#define AGENT_INSTANCE_PROVIDER_LEN 12
 
 enum agent_state {
     AGENT_STATE_IDLE     = 0,
@@ -37,6 +38,7 @@ typedef struct {
     char id[AGENT_INSTANCE_ID_LEN + 1];
     char label[AGENT_INSTANCE_LABEL_LEN + 1];
     char status[AGENT_INSTANCE_STATUS_LEN + 1];
+    char provider[AGENT_INSTANCE_PROVIDER_LEN + 1];
     uint8_t state;
     uint32_t updated_ms;
 } agent_instance_info_t;

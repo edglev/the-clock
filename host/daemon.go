@@ -1,11 +1,13 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3"
 	"tinygo.org/x/bluetooth"
 )
 
@@ -26,24 +29,50 @@ const (
 	multiUUID  = "00000000-0000-a359-42f0-4467de900006"
 	sockPath   = "/tmp/agent-viewer.sock"
 
-	maxLabelLen  = 32
-	maxStatusLen = 32
+	maxLabelLen    = 32
+	maxStatusLen   = 32
+	maxProviderLen = 12
+
+	stateIdle     byte = 0
+	stateThinking byte = 1
+	stateWaiting  byte = 2
+	stateSuccess  byte = 3
 )
 
-var eventToState = map[string]byte{
-	"SessionStart": 0,
-	"SessionEnd":   0,
-	"PreToolUse":   1,
-	"Notification": 2,
-	"Stop":         3,
+var claudeEventToState = map[string]byte{
+	"SessionStart": stateIdle,
+	"SessionEnd":   stateIdle,
+	"PreToolUse":   stateThinking,
+	"Notification": stateWaiting,
+	"Stop":         stateSuccess,
 }
 
-var eventToStatus = map[string]string{
+var claudeEventToStatus = map[string]string{
 	"SessionStart": "Started",
 	"SessionEnd":   "Ended",
 	"PreToolUse":   "Thinking",
 	"Notification": "Waiting",
 	"Stop":         "Success",
+}
+
+var codexEventToState = map[string]byte{
+	"SessionStart":      stateIdle,
+	"SessionEnd":        stateIdle,
+	"UserPromptSubmit":  stateThinking,
+	"PreToolUse":        stateThinking,
+	"PermissionRequest": stateWaiting,
+	"Notification":      stateWaiting,
+	"Stop":              stateSuccess,
+}
+
+var codexEventToStatus = map[string]string{
+	"SessionStart":      "Started",
+	"SessionEnd":        "Ended",
+	"UserPromptSubmit":  "Thinking",
+	"PreToolUse":        "Thinking",
+	"PermissionRequest": "Approval",
+	"Notification":      "Waiting",
+	"Stop":              "Success",
 }
 
 var (
@@ -67,6 +96,10 @@ type hookEvent struct {
 	CWD         string `json:"cwd"`
 	SessionID   string `json:"session_id,omitempty"`
 	Label       string `json:"label,omitempty"`
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	ToolName    string `json:"tool_name,omitempty"`
+	TurnID      string `json:"turn_id,omitempty"`
 	TimestampMS int64  `json:"timestamp_ms"`
 }
 
@@ -75,6 +108,9 @@ type agentInstance struct {
 	Key       string
 	UserLabel string
 	Label     string
+	Provider  string
+	SessionID string
+	Model     string
 	Event     string
 	Status    string
 	State     byte
@@ -88,7 +124,7 @@ type claudeStats struct {
 	TotalCost         float64 `json:"totalCost"`
 }
 
-func readStats() string {
+func readClaudeStats() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "home err"
@@ -105,6 +141,119 @@ func readStats() string {
 	}
 	total := s.TotalInputTokens + s.TotalOutputTokens
 	return fmt.Sprintf("Cost $%.2f T %.1fk", s.TotalCost, float64(total)/1000.0)
+}
+
+func readInstanceStats(inst agentInstance) string {
+	if normalizeProvider(inst.Provider) == "Codex" {
+		if stats := readCodexStats(inst.SessionID, inst.Key); stats != "" {
+			return stats
+		}
+		return inst.Status
+	}
+	return readClaudeStats()
+}
+
+func readCodexStats(sessionID, cwd string) string {
+	path := codexStatePath()
+	if path == "" {
+		return ""
+	}
+
+	dbURL := url.URL{
+		Scheme:   "file",
+		Path:     path,
+		RawQuery: "mode=ro&_query_only=true",
+	}
+	db, err := sql.Open("sqlite3", dbURL.String())
+	if err != nil {
+		return ""
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	tokens, ok := codexTokensForThread(db, sessionID, cwd)
+	if !ok {
+		return ""
+	}
+	return formatTokenStats(tokens)
+}
+
+func codexStatePath() string {
+	if path := strings.TrimSpace(os.Getenv("AGENT_VIEWER_CODEX_STATE_DB")); path != "" {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codex", "state_5.sqlite")
+}
+
+func codexTokensForThread(db *sql.DB, sessionID, cwd string) (int64, bool) {
+	if strings.TrimSpace(sessionID) != "" {
+		var tokens sql.NullInt64
+		if err := db.QueryRow("select tokens_used from threads where id = ? limit 1", sessionID).Scan(&tokens); err == nil && tokens.Valid {
+			return tokens.Int64, true
+		}
+	}
+
+	if strings.TrimSpace(cwd) != "" {
+		var tokens sql.NullInt64
+		err := db.QueryRow(
+			"select tokens_used from threads where cwd = ? order by updated_at_ms desc limit 1",
+			cwd,
+		).Scan(&tokens)
+		if err == nil && tokens.Valid {
+			return tokens.Int64, true
+		}
+	}
+
+	return 0, false
+}
+
+func formatTokenStats(tokens int64) string {
+	if tokens < 1000 {
+		return fmt.Sprintf("Tokens %d", tokens)
+	}
+	if tokens < 1000000 {
+		return fmt.Sprintf("Tokens %.1fk", float64(tokens)/1000.0)
+	}
+	return fmt.Sprintf("Tokens %.1fm", float64(tokens)/1000000.0)
+}
+
+func eventStateAndStatus(provider, event string) (byte, string, bool) {
+	if normalizeProvider(provider) == "Codex" {
+		state, ok := codexEventToState[event]
+		if !ok {
+			return 0, "", false
+		}
+		status := codexEventToStatus[event]
+		if status == "" {
+			status = event
+		}
+		return state, status, true
+	}
+
+	state, ok := claudeEventToState[event]
+	if !ok {
+		return 0, "", false
+	}
+	status := claudeEventToStatus[event]
+	if status == "" {
+		status = event
+	}
+	return state, status, true
+}
+
+func normalizeProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "codex", "openai codex":
+		return "Codex"
+	case "claude", "claude code", "":
+		return "Claude"
+	default:
+		return sanitizeField(provider, maxProviderLen)
+	}
 }
 
 func markDisconnected(err error) {
@@ -163,11 +312,12 @@ func sendMultiPayload(payload string) bool {
 }
 
 func sendInstance(inst agentInstance) {
-	payload := fmt.Sprintf("U\t%s\t%d\t%s\t%s",
+	payload := fmt.Sprintf("U\t%s\t%d\t%s\t%s\t%s",
 		inst.ID,
 		inst.State,
 		sanitizeField(inst.Label, maxLabelLen),
 		sanitizeField(inst.Status, maxStatusLen),
+		sanitizeField(normalizeProvider(inst.Provider), maxProviderLen),
 	)
 	if !sendMultiPayload(payload) {
 		sendState(inst.State)
@@ -334,7 +484,7 @@ func connectLoop() {
 		if multiOK {
 			sendSnapshot()
 		} else {
-			sendStats(readStats())
+			sendStats(readClaudeStats())
 			sendState(0)
 		}
 	}
@@ -370,9 +520,10 @@ func handleConn(conn net.Conn) {
 	if ev.Event == "" {
 		return
 	}
-	fmt.Printf("[unix] event: %s cwd=%s\n", ev.Event, ev.CWD)
+	provider := normalizeProvider(ev.Provider)
+	fmt.Printf("[unix] event: %s provider=%s cwd=%s\n", ev.Event, provider, ev.CWD)
 
-	state, ok := eventToState[ev.Event]
+	state, status, ok := eventStateAndStatus(provider, ev.Event)
 	if !ok {
 		return
 	}
@@ -383,11 +534,7 @@ func handleConn(conn net.Conn) {
 	}
 
 	key := canonicalPath(ev.CWD)
-	id := instanceID(key)
-	status := eventToStatus[ev.Event]
-	if status == "" {
-		status = ev.Event
-	}
+	id := instanceID(instanceKey(provider, key, ev.SessionID))
 
 	instancesMu.Lock()
 	inst, ok := instances[id]
@@ -396,6 +543,9 @@ func handleConn(conn net.Conn) {
 		instances[id] = inst
 	}
 	inst.UserLabel = strings.TrimSpace(ev.Label)
+	inst.Provider = provider
+	inst.SessionID = strings.TrimSpace(ev.SessionID)
+	inst.Model = strings.TrimSpace(ev.Model)
 	inst.Event = ev.Event
 	inst.State = state
 	inst.Status = status
@@ -437,15 +587,30 @@ func parseEvent(data []byte) hookEvent {
 
 func autoIdle(id string, eventTime time.Time) {
 	time.Sleep(2 * time.Second)
-	stats := readStats()
 
 	instancesMu.Lock()
 	inst, ok := instances[id]
-	if !ok || focusedID != id || !inst.Updated.Equal(eventTime) || inst.State != eventToState["Stop"] {
+	if !ok || focusedID != id || !inst.Updated.Equal(eventTime) {
 		instancesMu.Unlock()
 		return
 	}
-	inst.State = eventToState["SessionEnd"]
+	idleState, _, ok := eventStateAndStatus(inst.Provider, "SessionEnd")
+	if !ok || inst.State != stateSuccess {
+		instancesMu.Unlock()
+		return
+	}
+	statsInst := *inst
+	instancesMu.Unlock()
+
+	stats := readInstanceStats(statsInst)
+
+	instancesMu.Lock()
+	inst, ok = instances[id]
+	if !ok || focusedID != id || !inst.Updated.Equal(eventTime) || inst.State != stateSuccess {
+		instancesMu.Unlock()
+		return
+	}
+	inst.State = idleState
 	inst.Status = stats
 	inst.Updated = time.Now()
 	deriveLabelsLocked()
@@ -461,7 +626,7 @@ func statsSync() {
 		multiOK := multiSupported
 		connMu.RUnlock()
 		if ok && !multiOK {
-			sendStats(readStats())
+			sendStats(readClaudeStats())
 		}
 	}
 }
@@ -556,6 +721,15 @@ func instanceID(key string) string {
 	return fmt.Sprintf("%08x", h.Sum32())
 }
 
+func instanceKey(provider, cwd, sessionID string) string {
+	provider = normalizeProvider(provider)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return provider + "\x00" + cwd
+	}
+	return provider + "\x00" + cwd + "\x00" + sessionID
+}
+
 func deriveLabelsLocked() {
 	baseCounts := map[string]int{}
 	for _, inst := range instances {
@@ -625,11 +799,14 @@ func sanitizeField(s string, maxLen int) string {
 	return s
 }
 
-func main() {
+func runDaemon() error {
 	fmt.Println("=== Agent Viewer Daemon ===")
-	adapter.Enable()
+	if err := adapter.Enable(); err != nil {
+		return fmt.Errorf("enable bluetooth adapter: %w", err)
+	}
 	go unixServer()
 	go statsSync()
 	go pruneLoop()
 	connectLoop()
+	return nil
 }
