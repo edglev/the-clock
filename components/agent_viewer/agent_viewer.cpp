@@ -13,6 +13,8 @@
 
 static const char *TAG = "agent_viewer";
 
+#define COLOR_CYAN      0x009999
+#define COLOR_CYAN_DIM  0x004D4D
 #define DIAL_SIZE 206
 #define DIAL_CX   (DIAL_SIZE / 2)
 #define DIAL_CY   (DIAL_SIZE / 2)
@@ -138,7 +140,7 @@ static void update_canvas(void)
 
     switch (focused.state) {
     case AGENT_STATE_IDLE: {
-        arc_dsc.color = lv_color_hex(0x007777);
+        arc_dsc.color = lv_color_hex(COLOR_CYAN_DIM);
         arc_dsc.radius = 30;
         arc_dsc.center.x = cx; arc_dsc.center.y = cy;
         arc_dsc.start_angle = 0; arc_dsc.end_angle = 3600;
@@ -146,9 +148,9 @@ static void update_canvas(void)
         rad = (rot_angle / 2.0f) * ((float)M_PI / 180.0f);
         lx = cx + (int)(25 * cos(rad));
         ly = cy + (int)(25 * sin(rad));
-        draw_line(&layer, cx, cy, lx, ly, lv_color_hex(0x00FFFF));
+        draw_line(&layer, cx, cy, lx, ly, lv_color_hex(COLOR_CYAN));
         int r = 4 + (int)(3 * pulse_val);
-        draw_filled_circle(&layer, cx, cy, r, lv_color_hex(0x00FFFF));
+        draw_filled_circle(&layer, cx, cy, r, lv_color_hex(COLOR_CYAN));
         break;
     }
     case AGENT_STATE_THINKING: {
@@ -166,7 +168,7 @@ static void update_canvas(void)
         break;
     }
     case AGENT_STATE_SUCCESS: {
-        draw_filled_circle(&layer, cx, cy, 20, lv_color_hex(0x007777));
+        draw_filled_circle(&layer, cx, cy, 20, lv_color_hex(COLOR_CYAN_DIM));
         draw_filled_circle(&layer, cx, cy, 15, lv_color_hex(0x00FF00));
         draw_line(&layer, cx - 7, cy, cx - 2, cy + 5, lv_color_hex(0xFFFFFF));
         draw_line(&layer, cx - 2, cy + 5, cx + 7, cy - 5, lv_color_hex(0xFFFFFF));
@@ -247,7 +249,15 @@ static void tap_cb(lv_event_t *e) { agent_ble_notify_action(1); }
 
 static void set_status_ring_visible(bool visible)
 {
-    if (!status_ring || status_ring_visible == visible) return;
+    if (!status_ring) return;
+    if (status_ring_visible == visible) {
+        if (visible && lv_obj_has_flag(status_ring, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_remove_flag(status_ring, LV_OBJ_FLAG_HIDDEN);
+        } else if (!visible && !lv_obj_has_flag(status_ring, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(status_ring, LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
+    }
 
     status_ring_visible = visible;
 
@@ -262,9 +272,10 @@ static bool tileview_settled_on_agent(void)
 {
     if (!tileview) return true;
     if (lv_obj_is_scrolling(tileview)) return false;
-    return lv_tileview_get_tile_active(tileview) == tile_agent &&
-           lv_obj_get_scroll_x(tileview) == 0 &&
-           lv_obj_get_scroll_y(tileview) == 0;
+    if (lv_obj_get_scroll_x(tileview) != 0 || lv_obj_get_scroll_y(tileview) != 0) return false;
+
+    lv_obj_t *active_tile = lv_tileview_get_tile_active(tileview);
+    return active_tile == NULL || active_tile == tile_agent;
 }
 
 static void update_status_ring_visibility(void)
@@ -418,11 +429,11 @@ static void timer_cb(lv_timer_t *t)
         ring_color = lv_color_hex(0x555555);
     } else {
         switch (focused.state) {
-        case AGENT_STATE_IDLE:    ring_color = lv_color_hex(0x00FFFF); break;
+        case AGENT_STATE_IDLE:    ring_color = lv_color_hex(COLOR_CYAN); break;
         case AGENT_STATE_THINKING: ring_color = lv_color_hex(0x9933FF); break;
         case AGENT_STATE_WAITING:  ring_color = (rot_angle / 15 % 2 == 0) ? lv_color_hex(0xFFAA00) : lv_color_hex(0xFF0000); break;
         case AGENT_STATE_SUCCESS:  ring_color = lv_color_hex(0x00FF00); break;
-        default:                   ring_color = lv_color_hex(0x00FFFF); break;
+        default:                   ring_color = lv_color_hex(COLOR_CYAN); break;
         }
     }
     lv_obj_set_style_arc_color(status_ring, ring_color, LV_PART_INDICATOR);
@@ -456,7 +467,7 @@ static void create_status_ring(lv_obj_t *parent)
     lv_obj_set_style_pad_all(status_ring, 0, LV_PART_MAIN);
     lv_obj_set_style_arc_width(status_ring, 0, LV_PART_MAIN);
     lv_obj_set_style_arc_width(status_ring, 10, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(status_ring, lv_color_hex(0x00FFFF), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(status_ring, lv_color_hex(COLOR_CYAN), LV_PART_INDICATOR);
     lv_obj_set_style_arc_opa(status_ring, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_size(status_ring, 0, 0, LV_PART_KNOB);
     lv_obj_set_style_opa(status_ring, LV_OPA_TRANSP, LV_PART_KNOB);
@@ -522,7 +533,7 @@ static void create_page_instances(lv_obj_t *tile)
 {
     lv_obj_t *title = lv_label_create(tile);
     lv_label_set_text(title, "Agents");
-    lv_obj_set_style_text_color(title, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(COLOR_CYAN), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 38);
 
@@ -577,6 +588,9 @@ void agent_viewer_init(void)
     lv_obj_set_style_border_width(tile_settings, 0, 0);
     agent_settings_create(tile_settings);
 
+    lv_tileview_set_tile(tileview, tile_agent, LV_ANIM_OFF);
+    update_status_ring_visibility();
+
     lv_obj_add_flag(tileview, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(tileview, tap_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(tileview, tileview_scroll_cb, LV_EVENT_SCROLL_BEGIN, NULL);
@@ -621,14 +635,14 @@ void agent_viewer_show_pairing_modal(uint32_t passkey, agent_viewer_pairing_cb_t
     lv_obj_set_style_bg_color(modal_cont, lv_color_hex(0x222222), 0);
     lv_obj_set_style_bg_opa(modal_cont, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(modal_cont, 2, 0);
-    lv_obj_set_style_border_color(modal_cont, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_border_color(modal_cont, lv_color_hex(COLOR_CYAN), 0);
     lv_obj_set_style_border_opa(modal_cont, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(modal_cont, 12, 0);
     lv_obj_set_style_pad_all(modal_cont, 20, 0);
 
     lv_obj_t *title = lv_label_create(modal_cont);
     lv_label_set_text(title, "Pairing Request");
-    lv_obj_set_style_text_color(title, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(COLOR_CYAN), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
 

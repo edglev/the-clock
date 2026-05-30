@@ -13,6 +13,9 @@ static lv_obj_t *bond_list_cont = NULL;
 static lv_obj_t *pair_btn = NULL;
 static int last_bond_count = -1;
 
+#define COLOR_CYAN       0x009999
+#define COLOR_CYAN_DARK  0x00384D
+
 static void brightness_slider_cb(lv_event_t *e)
 {
     lv_obj_t *slider = (lv_obj_t *)lv_event_get_target(e);
@@ -134,7 +137,7 @@ void agent_settings_create(lv_obj_t *tile)
 {
     lv_obj_t *title = lv_label_create(tile);
     lv_label_set_text(title, "Settings");
-    lv_obj_set_style_text_color(title, lv_color_hex(0x00FFFF), 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(COLOR_CYAN), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 30);
 
@@ -157,7 +160,7 @@ void agent_settings_create(lv_obj_t *tile)
     lv_slider_set_value(slider, current_brightness, LV_ANIM_OFF);
     lv_obj_add_event_cb(slider, brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_set_style_bg_color(slider, lv_color_hex(0x333333), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(slider, lv_color_hex(0x00FFFF), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(slider, lv_color_hex(COLOR_CYAN), LV_PART_INDICATOR);
 
     lv_obj_t *batt_label = lv_label_create(tile);
     lv_label_set_text(batt_label, "Battery");
@@ -204,7 +207,7 @@ void agent_settings_create(lv_obj_t *tile)
     pair_btn = lv_btn_create(tile);
     lv_obj_set_size(pair_btn, 440, 34);
     lv_obj_align(pair_btn, LV_ALIGN_TOP_MID, 0, 440);
-    lv_obj_set_style_bg_color(pair_btn, lv_color_hex(0x005577), 0);
+    lv_obj_set_style_bg_color(pair_btn, lv_color_hex(COLOR_CYAN_DARK), 0);
     lv_obj_add_event_cb(pair_btn, pair_new_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *pair_l = lv_label_create(pair_btn);
     lv_label_set_text(pair_l, "Pair New Device");
@@ -236,7 +239,7 @@ void agent_settings_timer_update(void)
             lv_obj_set_style_bg_color(pair_btn, lv_color_hex(0x007700), 0);
         } else if (!pairing && strcmp(lv_label_get_text(lbl), "Pairing...") == 0) {
             lv_label_set_text(lbl, "Pair New Device");
-            lv_obj_set_style_bg_color(pair_btn, lv_color_hex(0x005577), 0);
+            lv_obj_set_style_bg_color(pair_btn, lv_color_hex(COLOR_CYAN_DARK), 0);
         }
     }
 }
