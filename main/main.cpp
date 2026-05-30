@@ -2,6 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "lvgl.h"
 #include "nvs_flash.h"
 #include "bsp/esp-bsp.h"
 #include "agent_pmic.hpp"
@@ -21,12 +22,23 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    ESP_LOGI(TAG, "Starting display");
     bsp_display_start();
+    if (bsp_display_lock(1000) == ESP_OK) {
+        lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x000000), 0);
+        lv_obj_invalidate(lv_scr_act());
+        bsp_display_unlock();
+    }
     bsp_display_backlight_on();
+    vTaskDelay(pdMS_TO_TICKS(100));
 
-    agent_pmic_init();
+    ESP_LOGI(TAG, "Starting BLE");
     agent_ble_init();
+    ESP_LOGI(TAG, "Starting UI");
     agent_viewer_init();
+    ESP_LOGI(TAG, "Starting PMIC");
+    agent_pmic_init();
+    ESP_LOGI(TAG, "Startup complete");
 
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));

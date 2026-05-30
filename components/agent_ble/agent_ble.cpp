@@ -15,6 +15,8 @@
 #include "agent_viewer.hpp"
 #include "agent_ble.hpp"
 
+extern "C" void ble_store_config_init(void);
+
 static const char *TAG = "agent_ble";
 
 uint8_t g_ble_state = 0;
@@ -28,6 +30,8 @@ static uint16_t action_val_handle;
 static uint16_t name_val_handle;
 static uint16_t multi_val_handle;
 static uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static ble_addr_t s_connected_peer_addr;
+static bool s_have_connected_peer_addr = false;
 
 #define MAX_BONDED_DEVICES 3
 #define MAX_NAME_LEN 32
@@ -225,7 +229,6 @@ static void load_bonds(void)
         }
     }
     nvs_close(h);
-    ESP_LOGI(TAG, "Loaded %d bonded device(s) from NVS", s_bonded_count);
 }
 
 static void save_bonds(void)
@@ -272,6 +275,69 @@ static void add_bond(const uint8_t *addr, uint8_t addr_type)
     }
 }
 
+static int find_cached_bond(const uint8_t *addr)
+{
+    for (int i = 0; i < s_bonded_count; i++) {
+        if (memcmp(s_bonded_devices[i].addr, addr, 6) == 0) return i;
+    }
+    return -1;
+}
+
+static void remove_cached_bond(int index)
+{
+    if (index < 0 || index >= s_bonded_count) return;
+    for (int i = index; i < s_bonded_count - 1; i++) {
+        s_bonded_devices[i] = s_bonded_devices[i + 1];
+    }
+    s_bonded_count--;
+}
+
+static void sync_bond_cache_with_store(void)
+{
+    ble_addr_t peer_addrs[MAX_BONDED_DEVICES];
+    int peer_count = 0;
+    int rc = ble_store_util_bonded_peers(peer_addrs, &peer_count, MAX_BONDED_DEVICES);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "Failed to read NimBLE bond store: %d", rc);
+        return;
+    }
+
+    bool changed = false;
+
+    for (int i = 0; i < s_bonded_count;) {
+        bool found = false;
+        for (int j = 0; j < peer_count; j++) {
+            if (memcmp(s_bonded_devices[i].addr, peer_addrs[j].val, 6) == 0) {
+                s_bonded_devices[i].addr_type = peer_addrs[j].type;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            ESP_LOGW(TAG, "Dropping stale cached bond");
+            remove_cached_bond(i);
+            changed = true;
+        } else {
+            i++;
+        }
+    }
+
+    for (int i = 0; i < peer_count && s_bonded_count < MAX_BONDED_DEVICES; i++) {
+        if (find_cached_bond(peer_addrs[i].val) < 0) {
+            memcpy(s_bonded_devices[s_bonded_count].addr, peer_addrs[i].val, 6);
+            s_bonded_devices[s_bonded_count].addr_type = peer_addrs[i].type;
+            s_bonded_devices[s_bonded_count].name[0] = '\0';
+            s_bonded_count++;
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        save_bonds();
+    }
+    ESP_LOGI(TAG, "Loaded %d bonded device(s)", s_bonded_count);
+}
+
 // Pairing access control
 static bool g_ble_pairing_mode = true;
 
@@ -283,10 +349,19 @@ void agent_ble_disable_pairing_mode(void) { g_ble_pairing_mode = false; ESP_LOGI
 
 static bool is_peer_bonded(const uint8_t *addr)
 {
-    for (int i = 0; i < s_bonded_count; i++) {
-        if (memcmp(s_bonded_devices[i].addr, addr, 6) == 0) return true;
+    return find_cached_bond(addr) >= 0;
+}
+
+static void delete_peer_bond(const ble_addr_t *peer_addr)
+{
+    if (!peer_addr) return;
+
+    ble_store_util_delete_peer(peer_addr);
+    int cached = find_cached_bond(peer_addr->val);
+    if (cached >= 0) {
+        remove_cached_bond(cached);
+        save_bonds();
     }
-    return false;
 }
 
 // Pairing modal coordination
@@ -439,6 +514,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
             uint16_t handle = event->connect.conn_handle;
             struct ble_gap_conn_desc d;
             if (ble_gap_conn_find(handle, &d) == 0) {
+                s_connected_peer_addr = d.peer_id_addr;
+                s_have_connected_peer_addr = true;
                 bool bonded = is_peer_bonded(d.peer_id_addr.val);
                 if (!bonded && !g_ble_pairing_mode && s_bonded_count > 0) {
                     ESP_LOGI(TAG, "Rejecting unpaired peer (no pairing mode)");
@@ -459,26 +536,41 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         s_pairing_pending = false;
         conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        s_have_connected_peer_addr = false;
         g_ble_connected = false;
         ESP_LOGI(TAG, "Disconnected, reason=%d", event->disconnect.reason);
         ble_advertise();
         break;
-    case BLE_GAP_EVENT_ENC_CHANGE:
+    case BLE_GAP_EVENT_ENC_CHANGE: {
+        struct ble_gap_conn_desc desc;
         if (event->enc_change.status == 0) {
             ESP_LOGI(TAG, "Encryption established");
             g_ble_connected = true;
             g_ble_pairing_mode = false;
-            struct ble_gap_conn_desc desc;
-            if (ble_gap_conn_find(conn_handle, &desc) == 0) {
+            if (ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0) {
+                s_connected_peer_addr = desc.peer_id_addr;
+                s_have_connected_peer_addr = true;
                 add_bond(desc.peer_id_addr.val, desc.peer_id_addr.type);
             }
         } else {
             ESP_LOGW(TAG, "Encryption failed, status=%d", event->enc_change.status);
+            if (ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0) {
+                delete_peer_bond(&desc.peer_id_addr);
+            } else if (s_have_connected_peer_addr) {
+                delete_peer_bond(&s_connected_peer_addr);
+            }
         }
         break;
-    case BLE_GAP_EVENT_REPEAT_PAIRING:
+    }
+    case BLE_GAP_EVENT_REPEAT_PAIRING: {
         ESP_LOGI(TAG, "Repeat pairing requested");
+        struct ble_gap_conn_desc desc;
+        if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0) {
+            delete_peer_bond(&desc.peer_id_addr);
+            return BLE_GAP_REPEAT_PAIRING_RETRY;
+        }
         return BLE_GAP_REPEAT_PAIRING_IGNORE;
+    }
     case BLE_GAP_EVENT_PASSKEY_ACTION: {
         struct ble_gap_passkey_params *pk = &event->passkey.params;
         ESP_LOGI(TAG, "Passkey action=%d numcmp=%lu", pk->action, (unsigned long)pk->numcmp);
@@ -565,8 +657,6 @@ void agent_ble_init(void)
 {
     ESP_LOGI(TAG, "Initializing NimBLE");
 
-    load_bonds();
-
     nimble_port_init();
 
     ble_hs_cfg.sync_cb = ble_on_sync;
@@ -578,6 +668,10 @@ void agent_ble_init(void)
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+    ble_store_config_init();
+
+    load_bonds();
+    sync_bond_cache_with_store();
 
     int rc = ble_gatts_count_cfg(ble_gatt_svcs);
     if (rc != 0) {
@@ -663,23 +757,13 @@ void agent_ble_delete_bond(int index)
     ble_addr_t peer_addr;
     memcpy(peer_addr.val, s_bonded_devices[index].addr, 6);
     peer_addr.type = s_bonded_devices[index].addr_type;
-    struct ble_store_key_sec key_sec;
-    struct ble_store_key_cccd key_cccd;
 
     if (is_connected) {
         ble_gap_unpair(&peer_addr);
     }
-    memset(&key_sec, 0, sizeof(key_sec));
-    key_sec.peer_addr = peer_addr;
-    ble_store_delete_peer_sec(&key_sec);
-    memset(&key_cccd, 0, sizeof(key_cccd));
-    key_cccd.peer_addr = peer_addr;
-    ble_store_delete_cccd(&key_cccd);
+    ble_store_util_delete_peer(&peer_addr);
 
-    for (int i = index; i < s_bonded_count - 1; i++) {
-        s_bonded_devices[i] = s_bonded_devices[i + 1];
-    }
-    s_bonded_count--;
+    remove_cached_bond(index);
     save_bonds();
 }
 

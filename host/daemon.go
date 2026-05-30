@@ -257,13 +257,14 @@ func normalizeProvider(provider string) string {
 }
 
 func markDisconnected(err error) {
-	if err != nil {
-		fmt.Printf("[ble] write failed: %v\n", err)
-	}
 	connMu.Lock()
+	wasConnected := connected
 	connected = false
 	multiSupported = false
 	connMu.Unlock()
+	if err != nil && wasConnected {
+		fmt.Printf("[ble] disconnected: %v\n", err)
+	}
 }
 
 func sendState(v byte) {
@@ -631,6 +632,23 @@ func statsSync() {
 	}
 }
 
+func healthLoop() {
+	for range time.NewTicker(5 * time.Second).C {
+		connMu.RLock()
+		ok := connected
+		ch := actionCh
+		connMu.RUnlock()
+		if !ok {
+			continue
+		}
+
+		var buf [1]byte
+		if _, err := ch.Read(buf[:]); err != nil {
+			markDisconnected(fmt.Errorf("health check failed: %w", err))
+		}
+	}
+}
+
 func pruneLoop() {
 	for range time.NewTicker(1 * time.Minute).C {
 		now := time.Now()
@@ -806,6 +824,7 @@ func runDaemon() error {
 	}
 	go unixServer()
 	go statsSync()
+	go healthLoop()
 	go pruneLoop()
 	connectLoop()
 	return nil
