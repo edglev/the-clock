@@ -26,6 +26,7 @@ static uint16_t state_val_handle;
 static uint16_t stats_val_handle;
 static uint16_t action_val_handle;
 static uint16_t name_val_handle;
+static uint16_t multi_val_handle;
 static uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
 #define MAX_BONDED_DEVICES 3
@@ -33,6 +34,11 @@ static uint16_t conn_handle = BLE_HS_CONN_HANDLE_NONE;
 #define NVS_BOND_NAMESPACE "ble_bonds"
 
 static char s_current_peer_name[MAX_NAME_LEN + 1] = "";
+
+static portMUX_TYPE s_instances_mux = portMUX_INITIALIZER_UNLOCKED;
+static agent_instance_info_t s_instances[AGENT_MAX_INSTANCES];
+static int s_instance_count = 0;
+static int s_focused_index = -1;
 
 typedef struct {
     uint8_t addr[6];
@@ -42,6 +48,151 @@ typedef struct {
 
 static bonded_device_t s_bonded_devices[MAX_BONDED_DEVICES];
 static int s_bonded_count = 0;
+
+static uint32_t now_ms(void)
+{
+    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+static void copy_clean(char *dst, size_t dst_size, const char *src)
+{
+    if (dst_size == 0) return;
+    memset(dst, 0, dst_size);
+    size_t i = 0;
+    if (src) {
+        for (; i < dst_size - 1 && src[i]; i++) {
+            char c = src[i];
+            dst[i] = (c == '\t' || c == '\r' || c == '\n') ? ' ' : c;
+        }
+    }
+}
+
+static int find_instance_locked(const char *id)
+{
+    for (int i = 0; i < s_instance_count; i++) {
+        if (strncmp(s_instances[i].id, id, AGENT_INSTANCE_ID_LEN) == 0) return i;
+    }
+    return -1;
+}
+
+static int oldest_instance_locked(void)
+{
+    int oldest = 0;
+    for (int i = 1; i < s_instance_count; i++) {
+        if (s_instances[i].updated_ms < s_instances[oldest].updated_ms) oldest = i;
+    }
+    return oldest;
+}
+
+static int newest_instance_locked(void)
+{
+    if (s_instance_count == 0) return -1;
+    int newest = 0;
+    for (int i = 1; i < s_instance_count; i++) {
+        if (s_instances[i].updated_ms >= s_instances[newest].updated_ms) newest = i;
+    }
+    return newest;
+}
+
+static void sync_legacy_globals_locked(const agent_instance_info_t *inst)
+{
+    if (!inst) {
+        g_ble_state = AGENT_STATE_IDLE;
+        copy_clean(g_ble_stats_text, sizeof(g_ble_stats_text), "Agent ready");
+        g_ble_stats_changed = true;
+        return;
+    }
+
+    g_ble_state = inst->state;
+    copy_clean(g_ble_stats_text, sizeof(g_ble_stats_text), inst->status[0] ? inst->status : inst->label);
+    g_ble_stats_changed = true;
+}
+
+static void upsert_instance(const char *id, uint8_t state, const char *label, const char *status)
+{
+    if (!id || !id[0]) return;
+    if (state > AGENT_STATE_SUCCESS) state = AGENT_STATE_IDLE;
+
+    uint32_t updated = now_ms();
+    portENTER_CRITICAL(&s_instances_mux);
+
+    int idx = find_instance_locked(id);
+    if (idx < 0) {
+        if (s_instance_count < AGENT_MAX_INSTANCES) {
+            idx = s_instance_count++;
+        } else {
+            idx = oldest_instance_locked();
+        }
+    }
+
+    copy_clean(s_instances[idx].id, sizeof(s_instances[idx].id), id);
+    copy_clean(s_instances[idx].label, sizeof(s_instances[idx].label), label && label[0] ? label : "Agent");
+    copy_clean(s_instances[idx].status, sizeof(s_instances[idx].status), status && status[0] ? status : "Idle");
+    s_instances[idx].state = state;
+    s_instances[idx].updated_ms = updated;
+    s_focused_index = idx;
+    g_ble_connected = true;
+    sync_legacy_globals_locked(&s_instances[idx]);
+
+    portEXIT_CRITICAL(&s_instances_mux);
+}
+
+static void delete_instance(const char *id)
+{
+    if (!id || !id[0]) return;
+
+    portENTER_CRITICAL(&s_instances_mux);
+    int idx = find_instance_locked(id);
+    if (idx >= 0) {
+        for (int i = idx; i < s_instance_count - 1; i++) {
+            s_instances[i] = s_instances[i + 1];
+        }
+        s_instance_count--;
+        if (s_focused_index == idx) {
+            s_focused_index = newest_instance_locked();
+        } else if (s_focused_index > idx) {
+            s_focused_index--;
+        }
+        sync_legacy_globals_locked(s_focused_index >= 0 ? &s_instances[s_focused_index] : NULL);
+    }
+    portEXIT_CRITICAL(&s_instances_mux);
+}
+
+static void upsert_legacy_instance(void)
+{
+    upsert_instance("legacy", g_ble_state, s_current_peer_name[0] ? s_current_peer_name : "Agent", g_ble_stats_text);
+}
+
+static void handle_multi_write(const uint8_t *data, int data_len)
+{
+    char payload[180];
+    int len = data_len < (int)sizeof(payload) - 1 ? data_len : (int)sizeof(payload) - 1;
+    memcpy(payload, data, len);
+    payload[len] = '\0';
+
+    char *save = NULL;
+    char *op = strtok_r(payload, "\t", &save);
+    if (!op) return;
+
+    if (op[0] == 'D') {
+        char *id = strtok_r(NULL, "\t", &save);
+        delete_instance(id);
+        ESP_LOGI(TAG, "Instance deleted: %s", id ? id : "");
+        return;
+    }
+
+    if (op[0] != 'U') return;
+
+    char *id = strtok_r(NULL, "\t", &save);
+    char *state_s = strtok_r(NULL, "\t", &save);
+    char *label = strtok_r(NULL, "\t", &save);
+    char *status = strtok_r(NULL, "\t", &save);
+    if (!id || !state_s || !label) return;
+
+    uint8_t state = (uint8_t)(state_s[0] - '0');
+    upsert_instance(id, state, label, status ? status : "");
+    ESP_LOGI(TAG, "Instance update: id=%s state=%u label=%s", id, state, label);
+}
 
 static void load_bonds(void)
 {
@@ -167,12 +318,14 @@ static void pairing_modal_cb(bool accepted)
 #define UUID_CHR2 0x03, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 #define UUID_CHR3 0x04, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 #define UUID_CHR4 0x05, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+#define UUID_CHR5 0x06, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 
 static const ble_uuid128_t ble_svc_uuid = BLE_UUID128_INIT(UUID_SVC);
 static const ble_uuid128_t ble_chr1_uuid = BLE_UUID128_INIT(UUID_CHR1);
 static const ble_uuid128_t ble_chr2_uuid = BLE_UUID128_INIT(UUID_CHR2);
 static const ble_uuid128_t ble_chr3_uuid = BLE_UUID128_INIT(UUID_CHR3);
 static const ble_uuid128_t ble_chr4_uuid = BLE_UUID128_INIT(UUID_CHR4);
+static const ble_uuid128_t ble_chr5_uuid = BLE_UUID128_INIT(UUID_CHR5);
 
 static int ble_gatts_access(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg);
 static void ble_advertise(void);
@@ -180,10 +333,11 @@ static void ble_advertise(void);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 static const struct ble_gatt_chr_def ble_chars[] = {
-    { .uuid = &ble_chr1_uuid.u, .access_cb = ble_gatts_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY, .val_handle = &state_val_handle },
-    { .uuid = &ble_chr2_uuid.u, .access_cb = ble_gatts_access, .flags = BLE_GATT_CHR_F_WRITE, .val_handle = &stats_val_handle },
+    { .uuid = &ble_chr1_uuid.u, .access_cb = ble_gatts_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_NOTIFY, .val_handle = &state_val_handle },
+    { .uuid = &ble_chr2_uuid.u, .access_cb = ble_gatts_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP, .val_handle = &stats_val_handle },
     { .uuid = &ble_chr3_uuid.u, .access_cb = ble_gatts_access, .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY, .val_handle = &action_val_handle },
-    { .uuid = &ble_chr4_uuid.u, .access_cb = ble_gatts_access, .flags = BLE_GATT_CHR_F_WRITE, .val_handle = &name_val_handle },
+    { .uuid = &ble_chr4_uuid.u, .access_cb = ble_gatts_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP, .val_handle = &name_val_handle },
+    { .uuid = &ble_chr5_uuid.u, .access_cb = ble_gatts_access, .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP, .val_handle = &multi_val_handle },
     { 0 },
 };
 
@@ -226,33 +380,47 @@ static int ble_gatts_access(uint16_t conn_handle, uint16_t attr_handle, struct b
         return 0;
     case BLE_GATT_ACCESS_OP_WRITE_CHR:
         if (attr_handle == state_val_handle) {
-            if (ctxt->om->om_len >= 1) {
-                g_ble_state = ctxt->om->om_data[0];
+            uint8_t state = 0;
+            if (OS_MBUF_PKTLEN(ctxt->om) >= 1 && os_mbuf_copydata(ctxt->om, 0, 1, &state) == 0) {
+                g_ble_state = state;
                 g_ble_connected = true;
+                upsert_legacy_instance();
                 ESP_LOGI(TAG, "State: %d", g_ble_state);
             }
         } else if (attr_handle == stats_val_handle) {
-            int len = ctxt->om->om_len < (int)sizeof(g_ble_stats_text) - 1 ? ctxt->om->om_len : (int)sizeof(g_ble_stats_text) - 1;
-            memcpy(g_ble_stats_text, ctxt->om->om_data, len);
-            g_ble_stats_text[len] = '\0';
-            g_ble_stats_changed = true;
-            ESP_LOGI(TAG, "Stats: %s", g_ble_stats_text);
+            int pkt_len = OS_MBUF_PKTLEN(ctxt->om);
+            int len = pkt_len < (int)sizeof(g_ble_stats_text) - 1 ? pkt_len : (int)sizeof(g_ble_stats_text) - 1;
+            if (os_mbuf_copydata(ctxt->om, 0, len, g_ble_stats_text) == 0) {
+                g_ble_stats_text[len] = '\0';
+                g_ble_stats_changed = true;
+                upsert_legacy_instance();
+                ESP_LOGI(TAG, "Stats: %s", g_ble_stats_text);
+            }
         } else if (attr_handle == name_val_handle) {
-            int len = ctxt->om->om_len < MAX_NAME_LEN ? ctxt->om->om_len : MAX_NAME_LEN;
-            memcpy(s_current_peer_name, ctxt->om->om_data, len);
-            s_current_peer_name[len] = '\0';
-            ESP_LOGI(TAG, "Peer name: %s", s_current_peer_name);
-            // Update the bond entry for the currently connected device
-            struct ble_gap_conn_desc d;
-            if (ble_gap_conn_find(conn_handle, &d) == 0) {
-                for (int i = 0; i < s_bonded_count; i++) {
-                    if (memcmp(s_bonded_devices[i].addr, d.peer_id_addr.val, 6) == 0) {
-                        strncpy(s_bonded_devices[i].name, s_current_peer_name, MAX_NAME_LEN);
-                        s_bonded_devices[i].name[MAX_NAME_LEN] = '\0';
-                        save_bonds();
-                        break;
+            int pkt_len = OS_MBUF_PKTLEN(ctxt->om);
+            int len = pkt_len < MAX_NAME_LEN ? pkt_len : MAX_NAME_LEN;
+            if (os_mbuf_copydata(ctxt->om, 0, len, s_current_peer_name) == 0) {
+                s_current_peer_name[len] = '\0';
+                ESP_LOGI(TAG, "Peer name: %s", s_current_peer_name);
+                // Update the bond entry for the currently connected device
+                struct ble_gap_conn_desc d;
+                if (ble_gap_conn_find(conn_handle, &d) == 0) {
+                    for (int i = 0; i < s_bonded_count; i++) {
+                        if (memcmp(s_bonded_devices[i].addr, d.peer_id_addr.val, 6) == 0) {
+                            strncpy(s_bonded_devices[i].name, s_current_peer_name, MAX_NAME_LEN);
+                            s_bonded_devices[i].name[MAX_NAME_LEN] = '\0';
+                            save_bonds();
+                            break;
+                        }
                     }
                 }
+            }
+        } else if (attr_handle == multi_val_handle) {
+            uint8_t buf[180];
+            int pkt_len = OS_MBUF_PKTLEN(ctxt->om);
+            int len = pkt_len < (int)sizeof(buf) ? pkt_len : (int)sizeof(buf);
+            if (os_mbuf_copydata(ctxt->om, 0, len, buf) == 0) {
+                handle_multi_write(buf, len);
             }
         }
         return 0;
@@ -368,7 +536,18 @@ static void ble_advertise(void)
 void agent_ble_notify_action(uint8_t value)
 {
     if (g_ble_connected) {
-        os_mbuf *om = ble_hs_mbuf_from_flat(&value, 1);
+        uint8_t payload[1 + AGENT_INSTANCE_ID_LEN];
+        int payload_len = 1;
+        payload[0] = value;
+
+        portENTER_CRITICAL(&s_instances_mux);
+        if (s_focused_index >= 0 && s_focused_index < s_instance_count) {
+            memcpy(&payload[1], s_instances[s_focused_index].id, AGENT_INSTANCE_ID_LEN);
+            payload_len = 1 + AGENT_INSTANCE_ID_LEN;
+        }
+        portEXIT_CRITICAL(&s_instances_mux);
+
+        os_mbuf *om = ble_hs_mbuf_from_flat(payload, payload_len);
         if (om) {
             ble_gattc_notify_custom(conn_handle, action_val_handle, om);
         }
@@ -412,6 +591,44 @@ void agent_ble_init(void)
 
     nimble_port_freertos_init(host_task);
     ble_advertise();
+}
+
+int agent_ble_get_instances(agent_instance_info_t *out, int max_count)
+{
+    if (!out || max_count <= 0) return 0;
+
+    portENTER_CRITICAL(&s_instances_mux);
+    int count = s_instance_count < max_count ? s_instance_count : max_count;
+    for (int i = 0; i < count; i++) {
+        out[i] = s_instances[i];
+    }
+    portEXIT_CRITICAL(&s_instances_mux);
+
+    return count;
+}
+
+bool agent_ble_get_focused_instance(agent_instance_info_t *out)
+{
+    if (!out) return false;
+
+    bool found = false;
+    portENTER_CRITICAL(&s_instances_mux);
+    if (s_focused_index >= 0 && s_focused_index < s_instance_count) {
+        *out = s_instances[s_focused_index];
+        found = true;
+    }
+    portEXIT_CRITICAL(&s_instances_mux);
+
+    return found;
+}
+
+int agent_ble_get_instance_count(void)
+{
+    int count;
+    portENTER_CRITICAL(&s_instances_mux);
+    count = s_instance_count;
+    portEXIT_CRITICAL(&s_instances_mux);
+    return count;
 }
 
 int agent_ble_get_bond_count(void)

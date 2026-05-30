@@ -2,7 +2,7 @@
 
 A BLE-connected desktop AI agent status monitor for the **Waveshare ESP32-S3-Touch-AMOLED-1.75**.
 
-Displays your AI agent's current working state (IDLE, THINKING, WAITING, SUCCESS) on a 1.75" circular AMOLED display with animated visuals, status ring, and touch interaction.
+Displays AI agent working state (IDLE, THINKING, WAITING, SUCCESS) on a 1.75" circular AMOLED display with animated visuals, status ring, touch interaction, and a multi-instance roster.
 
 ## Hardware
 
@@ -19,11 +19,12 @@ Displays your AI agent's current working state (IDLE, THINKING, WAITING, SUCCESS
 
 - **Animated status dial** — breathing/pulsing animations for each agent state
 - **Cyan status ring** — color-coded ring around the screen edge
+- **Multi-instance dashboard** — one focused newest agent plus a scrollable roster
 - **Touch interaction** — tap to acknowledge alerts
-- **Swipe navigation** — swipe left to access Settings
-- **Settings screen** — display brightness control, BLE connection status
+- **Swipe navigation** — swipe down for Agents and left for Settings
+- **Settings screen** — display brightness control, BLE connection status, battery status
 - **BLE GATT server** — receives state updates from a PC daemon
-- **Battery monitoring** — via AXP2101 PMIC (battery % top-right)
+- **Battery monitoring** — via AXP2101 PMIC
 
 ### Status States
 
@@ -33,6 +34,18 @@ Displays your AI agent's current working state (IDLE, THINKING, WAITING, SUCCESS
 | THINKING (1) | Purple | Fast rotating vortex + pulsing core |
 | WAITING (2) | Amber/Red | Blinking alert triangle |
 | SUCCESS (3) | Green | Checkmark badge (auto-reverts to IDLE) |
+
+### Status Ring Scroll UX Options
+
+Selected implementation: **tile-local ring hide/show**. The ring hides while page navigation is in progress and reappears only when the tileview settles back on the main Agent Viewer tile.
+
+| Option | Behavior | Difficulty |
+|---|---|---|
+| 1. Quick fade | Fade the status ring out as tile scrolling starts, then fade it back in only on the main Agent Viewer tile. | Low |
+| 2. Directional tuck | Compress or shift the ring edge opposite the swipe direction so it appears to tuck into the circular viewport. | Medium |
+| 3. Directional wipe | Clip the ring with a moving mask based on swipe direction, hiding the side that would otherwise sweep across the screen. | Medium |
+| 4. Tile-local ring | Keep the ring visually owned by the main tile and hide it whenever the tile is no longer active or settled. | Low |
+| 5. Rebuilt overlay | Draw the ring as a custom canvas layer with scroll-aware clipping and custom transition states. | High |
 
 ## Display Constraints
 
@@ -83,6 +96,10 @@ The screen is a **466×466 circular AMOLED**. The corners of the square coordina
 | **State** | `00000000-0000-a359-42f0-4467de900002` | Host → ESP32 | 1 byte: 0=IDLE, 1=THINKING, 2=WAITING, 3=SUCCESS | Agent status |
 | **Stats** | `00000000-0000-a359-42f0-4467de900003` | Host → ESP32 | UTF-8 string ≤24 chars | Token/cost HUD |
 | **Action** | `00000000-0000-a359-42f0-4467de900004` | ESP32 → Host | 1 byte: 1=ACK | Touch acknowledgment |
+| **Name** | `00000000-0000-a359-42f0-4467de900005` | Host → ESP32 | UTF-8 string ≤32 chars | Paired host display name |
+| **Multi** | `00000000-0000-a359-42f0-4467de900006` | Host → ESP32 | `U\tid\tstate\tlabel\tstatus` or `D\tid` | Multi-agent updates |
+
+The host hook sends JSON to `/tmp/agent-viewer.sock` with `event`, `cwd`, optional `session_id`, optional `label`, and `timestamp_ms`. The daemon aggregates by canonical worktree path and derives an 8-character instance id for BLE updates.
 
 ## Build & Flash
 

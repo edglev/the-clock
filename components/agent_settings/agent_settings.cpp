@@ -3,8 +3,10 @@
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "agent_ble.hpp"
+#include "agent_pmic.hpp"
 
 static lv_obj_t *label_ble_status = NULL;
+static lv_obj_t *label_battery_status = NULL;
 static lv_obj_t *label_brightness_val = NULL;
 static int current_brightness = 100;
 static lv_obj_t *bond_list_cont = NULL;
@@ -40,6 +42,26 @@ static void forget_all_cb(lv_event_t *e)
 {
     agent_ble_delete_all_bonds();
     last_bond_count = -1;
+}
+
+static void update_battery_status(void)
+{
+    if (!label_battery_status) return;
+
+    int percent = agent_pmic_get_battery_percent();
+    bool charging = agent_pmic_is_charging();
+
+    char buf[32];
+    if (percent >= 0) {
+        snprintf(buf, sizeof(buf), "%d%% %s", percent, charging ? "Charging" : "On battery");
+    } else {
+        snprintf(buf, sizeof(buf), "---");
+    }
+
+    lv_label_set_text(label_battery_status, buf);
+    lv_obj_set_style_text_color(label_battery_status,
+                                charging ? lv_color_hex(0x00FF00) : lv_color_hex(0x888888),
+                                0);
 }
 
 static void rebuild_bond_list(void)
@@ -137,6 +159,18 @@ void agent_settings_create(lv_obj_t *tile)
     lv_obj_set_style_bg_color(slider, lv_color_hex(0x333333), LV_PART_MAIN);
     lv_obj_set_style_bg_color(slider, lv_color_hex(0x00FFFF), LV_PART_INDICATOR);
 
+    lv_obj_t *batt_label = lv_label_create(tile);
+    lv_label_set_text(batt_label, "Battery");
+    lv_obj_set_style_text_color(batt_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(batt_label, &lv_font_montserrat_16, 0);
+    lv_obj_align(batt_label, LV_ALIGN_TOP_MID, -100, 150);
+
+    label_battery_status = lv_label_create(tile);
+    lv_label_set_text(label_battery_status, "---");
+    lv_obj_set_style_text_color(label_battery_status, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(label_battery_status, &lv_font_montserrat_16, 0);
+    lv_obj_align(label_battery_status, LV_ALIGN_TOP_MID, 100, 150);
+
     lv_obj_t *bt_label = lv_label_create(tile);
     lv_label_set_text(bt_label, "Bluetooth");
     lv_obj_set_style_text_color(bt_label, lv_color_hex(0xFFFFFF), 0);
@@ -176,11 +210,14 @@ void agent_settings_create(lv_obj_t *tile)
     lv_label_set_text(pair_l, "Pair New Device");
     lv_obj_center(pair_l);
 
+    update_battery_status();
     rebuild_bond_list();
 }
 
 void agent_settings_timer_update(void)
 {
+    update_battery_status();
+
     if (label_ble_status) {
         lv_label_set_text(label_ble_status, g_ble_connected ? "Connected" : "Disconnected");
         lv_obj_set_style_text_color(label_ble_status, g_ble_connected ? lv_color_hex(0x00FF00) : lv_color_hex(0xFF0000), 0);
