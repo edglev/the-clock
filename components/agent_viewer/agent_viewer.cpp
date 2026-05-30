@@ -529,9 +529,10 @@ static void create_page_instances(lv_obj_t *tile)
     instances_list = lv_obj_create(tile);
     lv_obj_set_size(instances_list, 350, 310);
     lv_obj_align(instances_list, LV_ALIGN_TOP_MID, 0, 86);
-    lv_obj_set_style_bg_color(instances_list, lv_color_hex(0x050505), 0);
-    lv_obj_set_style_bg_opa(instances_list, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(instances_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(instances_list, 0, 0);
+    lv_obj_set_style_outline_width(instances_list, 0, 0);
+    lv_obj_set_style_shadow_width(instances_list, 0, 0);
     lv_obj_set_style_radius(instances_list, 0, 0);
     lv_obj_set_style_pad_all(instances_list, 8, 0);
     lv_obj_set_style_pad_row(instances_list, 8, 0);
