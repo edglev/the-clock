@@ -88,14 +88,70 @@ static int oldest_instance_locked(void)
     return oldest;
 }
 
-static int newest_instance_locked(void)
+static int instance_priority(uint8_t state)
+{
+    switch (state) {
+    case AGENT_STATE_WAITING:  return 0;
+    case AGENT_STATE_THINKING: return 1;
+    case AGENT_STATE_SUCCESS:  return 2;
+    case AGENT_STATE_IDLE:
+    default:                   return 3;
+    }
+}
+
+static int highest_priority_locked(void)
+{
+    if (s_instance_count == 0) return 3;
+
+    int highest = instance_priority(s_instances[0].state);
+    for (int i = 1; i < s_instance_count; i++) {
+        int priority = instance_priority(s_instances[i].state);
+        if (priority < highest) highest = priority;
+    }
+    return highest;
+}
+
+static bool instance_before_locked(int a, int b, int highest_priority)
+{
+    int priority_a = instance_priority(s_instances[a].state);
+    int priority_b = instance_priority(s_instances[b].state);
+    if (priority_a != priority_b) return priority_a < priority_b;
+
+    if (priority_a == highest_priority) {
+        if (a == s_focused_index) return true;
+        if (b == s_focused_index) return false;
+    }
+
+    if (s_instances[a].priority_entered_ms != s_instances[b].priority_entered_ms) {
+        return s_instances[a].priority_entered_ms < s_instances[b].priority_entered_ms;
+    }
+    if (s_instances[a].updated_ms != s_instances[b].updated_ms) {
+        return s_instances[a].updated_ms > s_instances[b].updated_ms;
+    }
+    return strncmp(s_instances[a].id, s_instances[b].id, AGENT_INSTANCE_ID_LEN) < 0;
+}
+
+static int select_focused_instance_locked(void)
 {
     if (s_instance_count == 0) return -1;
-    int newest = 0;
-    for (int i = 1; i < s_instance_count; i++) {
-        if (s_instances[i].updated_ms >= s_instances[newest].updated_ms) newest = i;
+
+    int highest_priority = highest_priority_locked();
+    if (s_focused_index >= 0 && s_focused_index < s_instance_count &&
+        instance_priority(s_instances[s_focused_index].state) == highest_priority) {
+        return s_focused_index;
     }
-    return newest;
+
+    int best = -1;
+    for (int i = 0; i < s_instance_count; i++) {
+        if (instance_priority(s_instances[i].state) != highest_priority) continue;
+        if (best < 0 || instance_before_locked(i, best, highest_priority)) best = i;
+    }
+    return best;
+}
+
+static void reselect_focused_instance_locked(void)
+{
+    s_focused_index = select_focused_instance_locked();
 }
 
 static void sync_legacy_globals_locked(const agent_instance_info_t *inst)
@@ -112,7 +168,8 @@ static void sync_legacy_globals_locked(const agent_instance_info_t *inst)
     g_ble_stats_changed = true;
 }
 
-static void upsert_instance(const char *id, uint8_t state, const char *label, const char *status, const char *provider)
+static void upsert_instance(const char *id, uint8_t state, const char *label, const char *status,
+                            const char *provider, const char *branch)
 {
     if (!id || !id[0]) return;
     if (state > AGENT_STATE_SUCCESS) state = AGENT_STATE_IDLE;
@@ -121,23 +178,35 @@ static void upsert_instance(const char *id, uint8_t state, const char *label, co
     portENTER_CRITICAL(&s_instances_mux);
 
     int idx = find_instance_locked(id);
+    bool existing = idx >= 0;
+    int previous_priority = existing ? instance_priority(s_instances[idx].state) : -1;
     if (idx < 0) {
         if (s_instance_count < AGENT_MAX_INSTANCES) {
             idx = s_instance_count++;
         } else {
             idx = oldest_instance_locked();
+            existing = false;
         }
     }
 
+    if (!existing && s_focused_index == idx) {
+        s_focused_index = -1;
+    }
+
+    int new_priority = instance_priority(state);
     copy_clean(s_instances[idx].id, sizeof(s_instances[idx].id), id);
     copy_clean(s_instances[idx].label, sizeof(s_instances[idx].label), label && label[0] ? label : "Agent");
     copy_clean(s_instances[idx].status, sizeof(s_instances[idx].status), status && status[0] ? status : "Idle");
     copy_clean(s_instances[idx].provider, sizeof(s_instances[idx].provider), provider && provider[0] ? provider : "Agent");
+    copy_clean(s_instances[idx].branch, sizeof(s_instances[idx].branch), branch ? branch : "");
     s_instances[idx].state = state;
     s_instances[idx].updated_ms = updated;
-    s_focused_index = idx;
+    if (!existing || previous_priority != new_priority || s_instances[idx].priority_entered_ms == 0) {
+        s_instances[idx].priority_entered_ms = updated;
+    }
+    reselect_focused_instance_locked();
     g_ble_connected = true;
-    sync_legacy_globals_locked(&s_instances[idx]);
+    sync_legacy_globals_locked(s_focused_index >= 0 ? &s_instances[s_focused_index] : NULL);
 
     portEXIT_CRITICAL(&s_instances_mux);
 }
@@ -149,15 +218,19 @@ static void delete_instance(const char *id)
     portENTER_CRITICAL(&s_instances_mux);
     int idx = find_instance_locked(id);
     if (idx >= 0) {
+        bool focused_deleted = s_focused_index == idx;
         for (int i = idx; i < s_instance_count - 1; i++) {
             s_instances[i] = s_instances[i + 1];
         }
         s_instance_count--;
-        if (s_focused_index == idx) {
-            s_focused_index = newest_instance_locked();
+        if (focused_deleted) {
+            s_focused_index = -1;
         } else if (s_focused_index > idx) {
             s_focused_index--;
+        } else if (s_focused_index >= s_instance_count) {
+            s_focused_index = -1;
         }
+        reselect_focused_instance_locked();
         sync_legacy_globals_locked(s_focused_index >= 0 ? &s_instances[s_focused_index] : NULL);
     }
     portEXIT_CRITICAL(&s_instances_mux);
@@ -165,12 +238,13 @@ static void delete_instance(const char *id)
 
 static void upsert_legacy_instance(void)
 {
-    upsert_instance("legacy", g_ble_state, s_current_peer_name[0] ? s_current_peer_name : "Agent", g_ble_stats_text, "Agent");
+    upsert_instance("legacy", g_ble_state, s_current_peer_name[0] ? s_current_peer_name : "Agent",
+                    g_ble_stats_text, "Agent", "");
 }
 
 static void handle_multi_write(const uint8_t *data, int data_len)
 {
-    char payload[180];
+    char payload[220];
     int len = data_len < (int)sizeof(payload) - 1 ? data_len : (int)sizeof(payload) - 1;
     memcpy(payload, data, len);
     payload[len] = '\0';
@@ -193,11 +267,13 @@ static void handle_multi_write(const uint8_t *data, int data_len)
     char *label = strtok_r(NULL, "\t", &save);
     char *status = strtok_r(NULL, "\t", &save);
     char *provider = strtok_r(NULL, "\t", &save);
+    char *branch = strtok_r(NULL, "\t", &save);
     if (!id || !state_s || !label) return;
 
     uint8_t state = (uint8_t)(state_s[0] - '0');
-    upsert_instance(id, state, label, status ? status : "", provider ? provider : "");
-    ESP_LOGI(TAG, "Instance update: id=%s state=%u label=%s provider=%s", id, state, label, provider ? provider : "");
+    upsert_instance(id, state, label, status ? status : "", provider ? provider : "", branch ? branch : "");
+    ESP_LOGI(TAG, "Instance update: id=%s state=%u label=%s provider=%s branch=%s",
+             id, state, label, provider ? provider : "", branch ? branch : "");
 }
 
 static void load_bonds(void)
@@ -493,7 +569,7 @@ static int ble_gatts_access(uint16_t conn_handle, uint16_t attr_handle, struct b
                 }
             }
         } else if (attr_handle == multi_val_handle) {
-            uint8_t buf[180];
+            uint8_t buf[220];
             int pkt_len = OS_MBUF_PKTLEN(ctxt->om);
             int len = pkt_len < (int)sizeof(buf) ? pkt_len : (int)sizeof(buf);
             if (os_mbuf_copydata(ctxt->om, 0, len, buf) == 0) {
@@ -694,9 +770,24 @@ int agent_ble_get_instances(agent_instance_info_t *out, int max_count)
     if (!out || max_count <= 0) return 0;
 
     portENTER_CRITICAL(&s_instances_mux);
+    reselect_focused_instance_locked();
     int count = s_instance_count < max_count ? s_instance_count : max_count;
+    int order[AGENT_MAX_INSTANCES];
+    int highest_priority = highest_priority_locked();
+    for (int i = 0; i < s_instance_count; i++) {
+        order[i] = i;
+    }
+    for (int i = 0; i < s_instance_count - 1; i++) {
+        for (int j = i + 1; j < s_instance_count; j++) {
+            if (instance_before_locked(order[j], order[i], highest_priority)) {
+                int tmp = order[i];
+                order[i] = order[j];
+                order[j] = tmp;
+            }
+        }
+    }
     for (int i = 0; i < count; i++) {
-        out[i] = s_instances[i];
+        out[i] = s_instances[order[i]];
     }
     portEXIT_CRITICAL(&s_instances_mux);
 
@@ -709,6 +800,7 @@ bool agent_ble_get_focused_instance(agent_instance_info_t *out)
 
     bool found = false;
     portENTER_CRITICAL(&s_instances_mux);
+    reselect_focused_instance_locked();
     if (s_focused_index >= 0 && s_focused_index < s_instance_count) {
         *out = s_instances[s_focused_index];
         found = true;

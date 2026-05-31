@@ -122,7 +122,7 @@ On Linux, the hook also walks its `/proc` parent chain to find the owning `claud
 | **Stats** | `00000000-0000-a359-42f0-4467de900003` | Host -> ESP32 | UTF-8 string <=24 chars | Token/cost HUD |
 | **Action** | `00000000-0000-a359-42f0-4467de900004` | ESP32 -> Host | 1 byte: 1=ACK | Touch acknowledgment |
 | **Name** | `00000000-0000-a359-42f0-4467de900005` | Host -> ESP32 | UTF-8 string <=32 chars | Paired host display name |
-| **Multi** | `00000000-0000-a359-42f0-4467de900006` | Host -> ESP32 | `U\tid\tstate\tlabel\tstatus\tprovider` or `D\tid` | Multi-agent updates |
+| **Multi** | `00000000-0000-a359-42f0-4467de900006` | Host -> ESP32 | `U\tid\tstate\tlabel\tstatus\tprovider\tbranch` or `D\tid` | Multi-agent updates |
 
 ## Display Constraints
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -32,6 +33,7 @@ const (
 	maxLabelLen    = 32
 	maxStatusLen   = 32
 	maxProviderLen = 12
+	maxBranchLen   = 24
 
 	stateIdle     byte = 0
 	stateThinking byte = 1
@@ -113,6 +115,7 @@ type agentInstance struct {
 	Provider  string
 	SessionID string
 	Model     string
+	Branch    string
 	Event     string
 	Status    string
 	State     byte
@@ -348,12 +351,13 @@ func sendMultiPayload(payload string) bool {
 }
 
 func sendInstance(inst agentInstance) {
-	payload := fmt.Sprintf("U\t%s\t%d\t%s\t%s\t%s",
+	payload := fmt.Sprintf("U\t%s\t%d\t%s\t%s\t%s\t%s",
 		inst.ID,
 		inst.State,
 		sanitizeField(inst.Label, maxLabelLen),
 		sanitizeField(inst.Status, maxStatusLen),
 		sanitizeField(normalizeProvider(inst.Provider), maxProviderLen),
+		sanitizeOptionalField(inst.Branch, maxBranchLen),
 	)
 	if !sendMultiPayload(payload) {
 		sendState(inst.State)
@@ -590,6 +594,7 @@ func handleConn(conn net.Conn) {
 	inst.Provider = provider
 	inst.SessionID = strings.TrimSpace(ev.SessionID)
 	inst.Model = strings.TrimSpace(ev.Model)
+	inst.Branch = currentGitBranch(key)
 	inst.Event = ev.Event
 	inst.State = state
 	inst.Status = status
@@ -778,6 +783,32 @@ func canonicalPath(cwd string) string {
 	return filepath.Clean(abs)
 }
 
+func currentGitBranch(cwd string) string {
+	if strings.TrimSpace(cwd) == "" || cwd == "unknown" {
+		return ""
+	}
+
+	if branch := runGit(cwd, "branch", "--show-current"); branch != "" {
+		return branch
+	}
+	if rev := runGit(cwd, "rev-parse", "--short", "HEAD"); rev != "" {
+		return "detached " + rev
+	}
+	return ""
+}
+
+func runGit(cwd string, args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	cmdArgs := append([]string{"-C", cwd}, args...)
+	out, err := exec.CommandContext(ctx, "git", cmdArgs...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func configuredAddress() (bluetooth.Address, bool) {
 	text := strings.TrimSpace(os.Getenv("AGENT_VIEWER_ADDR"))
 	if text == "" {
@@ -856,6 +887,18 @@ func newestInstanceIDLocked() string {
 }
 
 func sanitizeField(s string, maxLen int) string {
+	s = cleanField(s, maxLen)
+	if s == "" {
+		return "Agent"
+	}
+	return s
+}
+
+func sanitizeOptionalField(s string, maxLen int) string {
+	return cleanField(s, maxLen)
+}
+
+func cleanField(s string, maxLen int) string {
 	s = strings.TrimSpace(s)
 	s = strings.Map(func(r rune) rune {
 		switch r {
@@ -866,7 +909,7 @@ func sanitizeField(s string, maxLen int) string {
 		}
 	}, s)
 	if s == "" {
-		return "Agent"
+		return ""
 	}
 	runes := []rune(s)
 	if len(runes) > maxLen {

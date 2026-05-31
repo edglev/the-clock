@@ -24,6 +24,8 @@ static const char *TAG = "agent_viewer";
 static lv_obj_t *canvas;
 static lv_draw_buf_t *draw_buf;
 static lv_obj_t *label_provider;
+static lv_obj_t *label_project;
+static lv_obj_t *label_branch;
 static lv_obj_t *label_stats;
 static lv_obj_t *label_agent_count;
 static lv_obj_t *label_batt_icon;
@@ -258,11 +260,12 @@ static void update_header(void)
 
     if (!g_ble_connected) {
         if (label_provider) lv_label_set_text(label_provider, "");
+        if (label_project) lv_label_set_text(label_project, "");
+        if (label_branch) lv_label_set_text(label_branch, "");
         lv_label_set_text(label_stats, "Waiting for connection");
         lv_obj_set_style_text_color(label_stats, lv_color_hex(0x888888), 0);
         if (label_agent_count) lv_label_set_text(label_agent_count, "");
     } else if (has_focus) {
-        char text[80];
         char provider[32];
         const char *status = focused.status[0] ? focused.status : agent_state_label(focused.state);
         format_provider_summary(provider, sizeof(provider), &focused);
@@ -270,8 +273,15 @@ static void update_header(void)
             lv_label_set_text(label_provider, provider);
             lv_obj_set_style_text_color(label_provider, lv_color_hex(COLOR_CYAN), 0);
         }
-        snprintf(text, sizeof(text), "%s: %s", focused.label, status);
-        lv_label_set_text(label_stats, text);
+        if (label_project) {
+            lv_label_set_text(label_project, focused.label);
+            lv_obj_set_style_text_color(label_project, lv_color_hex(0xFFFFFF), 0);
+        }
+        if (label_branch) {
+            lv_label_set_text(label_branch, focused.branch);
+            lv_obj_set_style_text_color(label_branch, lv_color_hex(0x888888), 0);
+        }
+        lv_label_set_text(label_stats, status);
         lv_obj_set_style_text_color(label_stats, agent_state_color(focused.state), 0);
 
         if (label_agent_count) {
@@ -286,6 +296,8 @@ static void update_header(void)
         }
     } else {
         if (label_provider) lv_label_set_text(label_provider, "");
+        if (label_project) lv_label_set_text(label_project, "");
+        if (label_branch) lv_label_set_text(label_branch, "");
         lv_label_set_text(label_stats, "Waiting for events");
         lv_obj_set_style_text_color(label_stats, lv_color_hex(0x888888), 0);
         if (label_agent_count) {
@@ -354,19 +366,6 @@ static uint32_t hash_bytes(uint32_t hash, const void *data, size_t len)
     return hash;
 }
 
-static void sort_instances_newest_first(agent_instance_info_t *items, int count)
-{
-    for (int i = 0; i < count - 1; i++) {
-        for (int j = i + 1; j < count; j++) {
-            if (items[j].updated_ms > items[i].updated_ms) {
-                agent_instance_info_t tmp = items[i];
-                items[i] = items[j];
-                items[j] = tmp;
-            }
-        }
-    }
-}
-
 static void format_age(uint32_t updated_ms, char *buf, size_t buf_size)
 {
     uint32_t elapsed_ms = now_ms() - updated_ms;
@@ -388,7 +387,6 @@ static void update_instances_page(void)
     agent_instance_info_t focused;
     bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused);
     int count = g_ble_connected ? agent_ble_get_instances(items, AGENT_MAX_INSTANCES) : 0;
-    sort_instances_newest_first(items, count);
 
     uint32_t sig = 2166136261u;
     sig = hash_bytes(sig, &g_ble_connected, sizeof(g_ble_connected));
@@ -401,6 +399,8 @@ static void update_instances_page(void)
         sig = hash_bytes(sig, items[i].label, strlen(items[i].label));
         sig = hash_bytes(sig, items[i].status, strlen(items[i].status));
         sig = hash_bytes(sig, items[i].provider, strlen(items[i].provider));
+        sig = hash_bytes(sig, items[i].branch, strlen(items[i].branch));
+        sig = hash_bytes(sig, &items[i].priority_entered_ms, sizeof(items[i].priority_entered_ms));
     }
     if (sig == instances_signature) return;
     instances_signature = sig;
@@ -506,6 +506,37 @@ static void timer_cb(lv_timer_t *t)
     }
 }
 
+static void make_indicator_noninteractive(lv_obj_t *obj)
+{
+    if (!obj) return;
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+static lv_obj_t *create_nav_hint(lv_obj_t *parent, const char *symbol, lv_align_t align, int x_ofs, int y_ofs)
+{
+    lv_obj_t *label = lv_label_create(parent);
+    lv_label_set_text(label, symbol);
+    lv_obj_set_width(label, 28);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(COLOR_CYAN), 0);
+    lv_obj_set_style_text_opa(label, LV_OPA_60, 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
+    make_indicator_noninteractive(label);
+    lv_obj_align(label, align, x_ofs, y_ofs);
+    return label;
+}
+
+static void create_page_indicators(void)
+{
+    create_nav_hint(tile_agent, LV_SYMBOL_DOWN, LV_ALIGN_BOTTOM_MID, 0, -14);
+    create_nav_hint(tile_agent, LV_SYMBOL_RIGHT, LV_ALIGN_RIGHT_MID, -28, 0);
+
+    create_nav_hint(tile_instances, LV_SYMBOL_UP, LV_ALIGN_TOP_MID, 0, 12);
+
+    create_nav_hint(tile_settings, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, 28, 0);
+}
+
 static void create_status_ring(lv_obj_t *parent)
 {
     status_ring = lv_arc_create(parent);
@@ -563,18 +594,37 @@ static void create_page_agent(lv_obj_t *tile)
     lv_obj_set_style_text_font(label_agent_count, &lv_font_montserrat_14, 0);
     lv_obj_align(label_agent_count, LV_ALIGN_TOP_MID, 0, 52);
 
+    label_project = lv_label_create(tile);
+    lv_label_set_text(label_project, "");
+    lv_label_set_long_mode(label_project, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_width(label_project, 320);
+    lv_obj_set_style_text_align(label_project, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label_project, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(label_project, &lv_font_montserrat_20, 0);
+    lv_obj_align(label_project, LV_ALIGN_TOP_MID, 0, 88);
+
+    label_branch = lv_label_create(tile);
+    lv_label_set_text(label_branch, "");
+    lv_label_set_long_mode(label_branch, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_width(label_branch, 320);
+    lv_obj_set_style_text_align(label_branch, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label_branch, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(label_branch, &lv_font_montserrat_14, 0);
+    lv_obj_align(label_branch, LV_ALIGN_TOP_MID, 0, 114);
+
     label_stats = lv_label_create(tile);
     lv_label_set_text(label_stats, "Waiting for connection");
+    lv_label_set_long_mode(label_stats, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_width(label_stats, 340);
     lv_obj_set_style_text_align(label_stats, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_stats, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(label_stats, &lv_font_montserrat_20, 0);
-    lv_obj_align(label_stats, LV_ALIGN_BOTTOM_MID, 0, -54);
+    lv_obj_set_style_text_font(label_stats, &lv_font_montserrat_14, 0);
+    lv_obj_align(label_stats, LV_ALIGN_TOP_MID, 0, 136);
 
     lv_obj_t *batt_row = lv_obj_create(tile);
     lv_obj_remove_style_all(batt_row);
     lv_obj_set_size(batt_row, 120, 24);
-    lv_obj_align_to(batt_row, label_stats, LV_ALIGN_OUT_BOTTOM_MID, 0, 8);
+    lv_obj_align(batt_row, LV_ALIGN_BOTTOM_MID, 0, -42);
     lv_obj_clear_flag(batt_row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(batt_row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(batt_row, LV_FLEX_FLOW_ROW);
@@ -651,6 +701,7 @@ void agent_viewer_init(void)
     lv_obj_set_style_border_width(tile_settings, 0, 0);
     agent_settings_create(tile_settings);
 
+    create_page_indicators();
     lv_tileview_set_tile(tileview, tile_agent, LV_ANIM_OFF);
     update_status_ring_visibility();
 
