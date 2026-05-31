@@ -13,7 +13,10 @@ extern "C" {
 // Stats (Write):  00000000-0000-a359-42f0-4467de900003  UTF-8 string, max ~24 chars
 // Action (Notify): 00000000-0000-a359-42f0-4467de900004  1 byte notification (touch ack)
 // Name (Write):   00000000-0000-a359-42f0-4467de900005  Peer device name, max 32 chars
-// Multi (Write):  00000000-0000-a359-42f0-4467de900006  U\tid\tstate\tlabel\tstatus\tprovider\tbranch\tmetrics\tmodel\teffort
+// Multi (Write):  00000000-0000-a359-42f0-4467de900006
+//   U\tid\tstate\tlabel\tstatus\tprovider\tbranch\tmetrics\tmodel\teffort
+//   D\tid
+//   P\tstate\tprogress\teta_s\tlayer\tlayers\tnozzle_c\tbed_c\tchamber_c\tjob\tmaterial\tsource\tupdated_ms
 #define AGENT_SVC_UUID    0x01, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 #define AGENT_STATE_CHAR  0x02, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 #define AGENT_STATS_CHAR  0x03, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -30,6 +33,11 @@ extern "C" {
 #define AGENT_INSTANCE_METRICS_LEN 20
 #define AGENT_INSTANCE_MODEL_LEN 24
 #define AGENT_INSTANCE_EFFORT_LEN 12
+#define AGENT_PRINTER_STATE_LEN 16
+#define AGENT_PRINTER_JOB_LEN 48
+#define AGENT_PRINTER_MATERIAL_LEN 24
+#define AGENT_PRINTER_TEMP_LEN 8
+#define AGENT_PRINTER_SOURCE_LEN 16
 
 enum agent_state {
     AGENT_STATE_IDLE     = 0,
@@ -52,6 +60,22 @@ typedef struct {
     uint32_t priority_entered_ms;
 } agent_instance_info_t;
 
+typedef struct {
+    char state[AGENT_PRINTER_STATE_LEN + 1];
+    char job[AGENT_PRINTER_JOB_LEN + 1];
+    char material[AGENT_PRINTER_MATERIAL_LEN + 1];
+    char nozzle_c[AGENT_PRINTER_TEMP_LEN + 1];
+    char bed_c[AGENT_PRINTER_TEMP_LEN + 1];
+    char chamber_c[AGENT_PRINTER_TEMP_LEN + 1];
+    char source[AGENT_PRINTER_SOURCE_LEN + 1];
+    int16_t progress_percent;
+    int32_t eta_seconds;
+    int16_t layer;
+    int16_t layers;
+    uint32_t updated_ms;
+    bool valid;
+} agent_printer_status_t;
+
 extern uint8_t g_ble_state;
 extern char    g_ble_stats_text[32];
 extern bool    g_ble_connected;
@@ -62,6 +86,7 @@ void agent_ble_notify_action(uint8_t value);
 int  agent_ble_get_instances(agent_instance_info_t *out, int max_count);
 bool agent_ble_get_focused_instance(agent_instance_info_t *out);
 int  agent_ble_get_instance_count(void);
+bool agent_ble_get_printer_status(agent_printer_status_t *out);
 int  agent_ble_get_bond_count(void);
 bool agent_ble_get_bond(int index, uint8_t addr[6]);
 const char *agent_ble_get_bond_name(int index);

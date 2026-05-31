@@ -2,8 +2,11 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestEventStateAndStatus(t *testing.T) {
@@ -112,6 +115,167 @@ func TestCodexTokensForThread(t *testing.T) {
 
 	if metrics := formatTokenMetrics(tokens); metrics != "4.6k tok" {
 		t.Fatalf("formatted metrics = %q", metrics)
+	}
+}
+
+func TestFormatPrinterPayloadSanitizesFields(t *testing.T) {
+	payload := formatPrinterPayload(printerStatus{
+		State:           "printing",
+		ProgressPercent: 42,
+		EtaSeconds:      3600,
+		Layer:           12,
+		Layers:          120,
+		NozzleC:         "220.5",
+		BedC:            "60",
+		ChamberC:        "35",
+		Job:             "clock\tbezel\nvery-long-print-name-that-should-be-truncated.3mf",
+		Material:        "PLA",
+		Source:          "Cloud",
+		Updated:         time.UnixMilli(1234567890),
+	})
+
+	fields := strings.Split(payload, "\t")
+	if len(fields) != 13 {
+		t.Fatalf("payload field count = %d: %q", len(fields), payload)
+	}
+	if fields[0] != "P" || fields[1] != "printing" || fields[2] != "42" {
+		t.Fatalf("unexpected payload prefix: %q", payload)
+	}
+	if strings.Contains(fields[9], "\n") || strings.Contains(fields[9], "\t") {
+		t.Fatalf("job was not sanitized: %q", fields[9])
+	}
+	if len([]rune(fields[9])) > maxPrinterJobLen {
+		t.Fatalf("job was not truncated: %q", fields[9])
+	}
+}
+
+func TestPrinterReconnectDelayBackoff(t *testing.T) {
+	delay := nextPrinterReconnectDelay(0)
+	if delay != printerReconnectMin {
+		t.Fatalf("initial delay = %s", delay)
+	}
+
+	delay = printerReconnectMin
+	for i := 0; i < 10; i++ {
+		delay = nextPrinterReconnectDelay(delay)
+	}
+	if delay != printerReconnectMax {
+		t.Fatalf("max delay = %s", delay)
+	}
+}
+
+func TestBambuOfflineJob(t *testing.T) {
+	if job := bambuOfflineJob(errors.New("Bambu config missing; run `agent-viewer bambu-login`")); job != "Run bambu-login" {
+		t.Fatalf("config job = %q", job)
+	}
+	if job := bambuOfflineJob(errors.New("Bambu MQTT disconnected")); job != "Bambu Cloud disconnected" {
+		t.Fatalf("disconnect job = %q", job)
+	}
+}
+
+func TestSamePrinterStatusViewIgnoresUpdated(t *testing.T) {
+	a := printerStatus{
+		State:           "printing",
+		ProgressPercent: 42,
+		Job:             "clock.3mf",
+		Source:          "Cloud",
+		Updated:         time.Unix(1, 0),
+	}
+	b := a
+	b.Updated = time.Unix(2, 0)
+
+	if !samePrinterStatusView(a, b) {
+		t.Fatal("same view differed only by Updated")
+	}
+	b.ProgressPercent = 43
+	if samePrinterStatusView(a, b) {
+		t.Fatal("different progress was treated as same view")
+	}
+}
+
+func TestPrinterStatusFromBambuPrint(t *testing.T) {
+	status := printerStatusFromBambuPrint(map[string]any{
+		"gcode_state":       "RUNNING",
+		"mc_percent":        float64(64),
+		"mc_remaining_time": float64(41),
+		"layer_num":         float64(77),
+		"total_layer_num":   float64(120),
+		"nozzle_temper":     float64(219.4),
+		"bed_temper":        float64(60),
+		"chamber_temper":    float64(36.2),
+		"gcode_file":        "cache/clock-bezel.3mf",
+		"vt_tray": map[string]any{
+			"tray_type": "PLA",
+		},
+	})
+
+	if status.State != "printing" {
+		t.Fatalf("state = %q", status.State)
+	}
+	if status.ProgressPercent != 64 || status.EtaSeconds != 2460 {
+		t.Fatalf("progress/eta = %d/%d", status.ProgressPercent, status.EtaSeconds)
+	}
+	if status.Layer != 77 || status.Layers != 120 {
+		t.Fatalf("layers = %d/%d", status.Layer, status.Layers)
+	}
+	if status.NozzleC != "219.4" || status.BedC != "60" || status.ChamberC != "36.2" {
+		t.Fatalf("temps = %q/%q/%q", status.NozzleC, status.BedC, status.ChamberC)
+	}
+	if status.Job != "clock-bezel.3mf" || status.Material != "PLA" {
+		t.Fatalf("job/material = %q/%q", status.Job, status.Material)
+	}
+}
+
+func TestPrinterStatusRunningWinsOverStaleErrors(t *testing.T) {
+	status := printerStatusFromBambuPrint(map[string]any{
+		"gcode_state":         "RUNNING",
+		"mc_percent":          float64(42),
+		"mc_print_error_code": "123",
+	})
+	if status.State != "printing" {
+		t.Fatalf("state = %q", status.State)
+	}
+}
+
+func TestPrinterStatusPausedErrorShowsFailed(t *testing.T) {
+	status := printerStatusFromBambuPrint(map[string]any{
+		"gcode_state":         "PAUSE",
+		"mc_percent":          float64(42),
+		"mc_print_error_code": "123",
+	})
+	if status.State != "error" {
+		t.Fatalf("state = %q", status.State)
+	}
+}
+
+func TestClearStaleBambuErrorFieldsOnHealthyStateUpdate(t *testing.T) {
+	merged := map[string]any{
+		"gcode_state":         "FAILED",
+		"mc_percent":          float64(42),
+		"print_error":         float64(117),
+		"mc_print_error_code": "123",
+		"hms":                 []any{map[string]any{"code": float64(1)}},
+	}
+	update := map[string]any{
+		"gcode_state": "RUNNING",
+		"mc_percent":  float64(43),
+	}
+
+	mergeJSONMap(merged, update)
+	clearStaleBambuErrorFields(merged, update)
+	status := printerStatusFromBambuPrint(merged)
+
+	if status.State != "printing" {
+		t.Fatalf("state = %q", status.State)
+	}
+	if _, ok := merged["print_error"]; ok {
+		t.Fatal("print_error was not cleared")
+	}
+	if _, ok := merged["mc_print_error_code"]; ok {
+		t.Fatal("mc_print_error_code was not cleared")
+	}
+	if _, ok := merged["hms"]; ok {
+		t.Fatal("hms was not cleared")
 	}
 }
 

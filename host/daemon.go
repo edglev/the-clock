@@ -502,6 +502,7 @@ func connectLoop() {
 
 		fmt.Println("[ble] connected")
 		sendSnapshot()
+		sendCurrentPrinterStatus()
 	}
 }
 
@@ -889,6 +890,7 @@ func runDaemon() error {
 	go unixServer()
 	go healthLoop()
 	go pruneLoop()
+	startPrinterStatusLoop()
 	connectLoop()
 	return nil
 }

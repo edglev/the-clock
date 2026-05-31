@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -43,6 +44,9 @@ static portMUX_TYPE s_instances_mux = portMUX_INITIALIZER_UNLOCKED;
 static agent_instance_info_t s_instances[AGENT_MAX_INSTANCES];
 static int s_instance_count = 0;
 static int s_focused_index = -1;
+
+static portMUX_TYPE s_printer_mux = portMUX_INITIALIZER_UNLOCKED;
+static agent_printer_status_t s_printer_status = {};
 
 typedef struct {
     uint8_t addr[6];
@@ -262,6 +266,42 @@ static int split_tab_fields(char *payload, char **fields, int max_fields)
     return count;
 }
 
+static int parse_int_field(const char *text, int fallback)
+{
+    if (!text || text[0] == '\0') return fallback;
+    return atoi(text);
+}
+
+static void upsert_printer_status(char **fields, int field_count)
+{
+    if (!fields || field_count != 13) return;
+
+    agent_printer_status_t next = {};
+    copy_clean(next.state, sizeof(next.state), fields[1][0] ? fields[1] : "unknown");
+    next.progress_percent = (int16_t)parse_int_field(fields[2], -1);
+    next.eta_seconds = (int32_t)parse_int_field(fields[3], -1);
+    next.layer = (int16_t)parse_int_field(fields[4], -1);
+    next.layers = (int16_t)parse_int_field(fields[5], -1);
+    copy_clean(next.nozzle_c, sizeof(next.nozzle_c), fields[6]);
+    copy_clean(next.bed_c, sizeof(next.bed_c), fields[7]);
+    copy_clean(next.chamber_c, sizeof(next.chamber_c), fields[8]);
+    copy_clean(next.job, sizeof(next.job), fields[9]);
+    copy_clean(next.material, sizeof(next.material), fields[10]);
+    copy_clean(next.source, sizeof(next.source), fields[11][0] ? fields[11] : "Cloud");
+    next.updated_ms = now_ms();
+    next.valid = true;
+
+    if (next.progress_percent > 100) next.progress_percent = 100;
+    if (next.progress_percent < -1) next.progress_percent = -1;
+
+    portENTER_CRITICAL(&s_printer_mux);
+    s_printer_status = next;
+    portEXIT_CRITICAL(&s_printer_mux);
+
+    ESP_LOGI(TAG, "Printer update: state=%s progress=%d job=%s source=%s",
+             next.state, next.progress_percent, next.job, next.source);
+}
+
 static void handle_multi_write(const uint8_t *data, int data_len)
 {
     char payload[300];
@@ -269,14 +309,19 @@ static void handle_multi_write(const uint8_t *data, int data_len)
     memcpy(payload, data, len);
     payload[len] = '\0';
 
-    char *fields[10] = {};
-    int field_count = split_tab_fields(payload, fields, 10);
+    char *fields[13] = {};
+    int field_count = split_tab_fields(payload, fields, 13);
     if (field_count <= 0 || !fields[0]) return;
 
     if (fields[0][0] == 'D') {
         if (field_count != 2 || !fields[1][0]) return;
         delete_instance(fields[1]);
         ESP_LOGI(TAG, "Instance deleted: %s", fields[1]);
+        return;
+    }
+
+    if (fields[0][0] == 'P') {
+        upsert_printer_status(fields, field_count);
         return;
     }
 
@@ -582,7 +627,7 @@ static int ble_gatts_access(uint16_t conn_handle, uint16_t attr_handle, struct b
                 }
             }
         } else if (attr_handle == multi_val_handle) {
-            uint8_t buf[220];
+            uint8_t buf[300];
             int pkt_len = OS_MBUF_PKTLEN(ctxt->om);
             int len = pkt_len < (int)sizeof(buf) ? pkt_len : (int)sizeof(buf);
             if (os_mbuf_copydata(ctxt->om, 0, len, buf) == 0) {
@@ -830,6 +875,18 @@ int agent_ble_get_instance_count(void)
     count = s_instance_count;
     portEXIT_CRITICAL(&s_instances_mux);
     return count;
+}
+
+bool agent_ble_get_printer_status(agent_printer_status_t *out)
+{
+    if (!out) return false;
+
+    bool valid;
+    portENTER_CRITICAL(&s_printer_mux);
+    *out = s_printer_status;
+    valid = s_printer_status.valid;
+    portEXIT_CRITICAL(&s_printer_mux);
+    return valid;
 }
 
 int agent_ble_get_bond_count(void)
