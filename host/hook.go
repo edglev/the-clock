@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -19,6 +20,7 @@ func runHook(args []string) error {
 	label := fs.String("label", "", "Optional display label")
 	provider := fs.String("provider", "", "Coding CLI provider (claude or codex); defaults to claude")
 	model := fs.String("model", "", "Optional model label")
+	effort := fs.String("effort", "", "Optional reasoning effort label")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -37,8 +39,34 @@ func runHook(args []string) error {
 	if *provider == "" {
 		*provider = stringField(stdinFields, "provider")
 	}
+	normalizedProvider := normalizeProvider(*provider)
 	if *model == "" {
 		*model = stringField(stdinFields, "model")
+	}
+	if *model == "" {
+		*model = firstNestedStringField(stdinFields,
+			[]string{"payload", "model"},
+			[]string{"collaboration_mode", "settings", "model"},
+			[]string{"payload", "collaboration_mode", "settings", "model"},
+		)
+	}
+	if *model == "" && normalizedProvider == "Codex" {
+		*model = codexConfigString("model")
+	}
+	if *effort == "" {
+		*effort = firstStringField(stdinFields, "effort", "reasoning_effort", "thinking_level", "reasoning_level")
+	}
+	if *effort == "" {
+		*effort = firstNestedStringField(stdinFields,
+			[]string{"payload", "effort"},
+			[]string{"payload", "reasoning_effort"},
+			[]string{"settings", "reasoning_effort"},
+			[]string{"collaboration_mode", "settings", "reasoning_effort"},
+			[]string{"payload", "collaboration_mode", "settings", "reasoning_effort"},
+		)
+	}
+	if *effort == "" && normalizedProvider == "Codex" {
+		*effort = codexConfigString("model_reasoning_effort", "plan_mode_reasoning_effort")
 	}
 	if *cwd == "" {
 		var err error
@@ -58,8 +86,9 @@ func runHook(args []string) error {
 		CWD:         *cwd,
 		SessionID:   *sessionID,
 		Label:       strings.TrimSpace(*label),
-		Provider:    normalizeProvider(*provider),
+		Provider:    normalizedProvider,
 		Model:       strings.TrimSpace(*model),
+		Effort:      strings.TrimSpace(*effort),
 		ToolName:    stringField(stdinFields, "tool_name"),
 		TurnID:      stringField(stdinFields, "turn_id"),
 		Process:     process,
@@ -108,4 +137,99 @@ func stringField(fields map[string]any, key string) string {
 		return value
 	}
 	return ""
+}
+
+func firstStringField(fields map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := stringField(fields, key); strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func nestedStringField(fields map[string]any, path ...string) string {
+	var value any = fields
+	for _, key := range path {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return ""
+		}
+		value = object[key]
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func firstNestedStringField(fields map[string]any, paths ...[]string) string {
+	for _, path := range paths {
+		if value := nestedStringField(fields, path...); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func codexConfigString(keys ...string) string {
+	path := os.Getenv("CODEX_HOME")
+	if strings.TrimSpace(path) == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		path = filepath.Join(home, ".codex")
+	}
+
+	data, err := os.ReadFile(filepath.Join(path, "config.toml"))
+	if err != nil {
+		return ""
+	}
+	return rootTomlString(data, keys...)
+}
+
+func rootTomlString(data []byte, keys ...string) string {
+	wanted := map[string]bool{}
+	for _, key := range keys {
+		wanted[key] = true
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			return ""
+		}
+
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || !wanted[strings.TrimSpace(key)] {
+			continue
+		}
+		return parseTomlString(value)
+	}
+	return ""
+}
+
+func parseTomlString(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "\"") {
+		end := strings.LastIndex(value[1:], "\"")
+		if end >= 0 {
+			return value[1 : end+1]
+		}
+	}
+	if strings.HasPrefix(value, "'") {
+		end := strings.LastIndex(value[1:], "'")
+		if end >= 0 {
+			return value[1 : end+1]
+		}
+	}
+	if before, _, ok := strings.Cut(value, "#"); ok {
+		value = before
+	}
+	return strings.TrimSpace(value)
 }

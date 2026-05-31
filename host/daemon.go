@@ -23,8 +23,6 @@ import (
 
 const (
 	svcUUID    = "00000000-0000-a359-42f0-4467de900001"
-	stateUUID  = "00000000-0000-a359-42f0-4467de900002"
-	statsUUID  = "00000000-0000-a359-42f0-4467de900003"
 	actionUUID = "00000000-0000-a359-42f0-4467de900004"
 	nameUUID   = "00000000-0000-a359-42f0-4467de900005"
 	multiUUID  = "00000000-0000-a359-42f0-4467de900006"
@@ -34,6 +32,9 @@ const (
 	maxStatusLen   = 32
 	maxProviderLen = 12
 	maxBranchLen   = 24
+	maxMetricsLen  = 20
+	maxModelLen    = 24
+	maxEffortLen   = 12
 
 	stateIdle     byte = 0
 	stateThinking byte = 1
@@ -78,16 +79,13 @@ var codexEventToStatus = map[string]string{
 }
 
 var (
-	adapter        = bluetooth.DefaultAdapter
-	stateCh        bluetooth.DeviceCharacteristic
-	statsCh        bluetooth.DeviceCharacteristic
-	actionCh       bluetooth.DeviceCharacteristic
-	nameCh         bluetooth.DeviceCharacteristic
-	multiCh        bluetooth.DeviceCharacteristic
-	connected      bool
-	multiSupported bool
-	connMu         sync.RWMutex
-	gattMu         sync.Mutex
+	adapter   = bluetooth.DefaultAdapter
+	actionCh  bluetooth.DeviceCharacteristic
+	nameCh    bluetooth.DeviceCharacteristic
+	multiCh   bluetooth.DeviceCharacteristic
+	connected bool
+	connMu    sync.RWMutex
+	gattMu    sync.Mutex
 
 	instancesMu sync.Mutex
 	instances   = map[string]*agentInstance{}
@@ -101,6 +99,7 @@ type hookEvent struct {
 	Label       string     `json:"label,omitempty"`
 	Provider    string     `json:"provider,omitempty"`
 	Model       string     `json:"model,omitempty"`
+	Effort      string     `json:"effort,omitempty"`
 	ToolName    string     `json:"tool_name,omitempty"`
 	TurnID      string     `json:"turn_id,omitempty"`
 	Process     processRef `json:"process,omitempty"`
@@ -115,6 +114,7 @@ type agentInstance struct {
 	Provider  string
 	SessionID string
 	Model     string
+	Effort    string
 	Branch    string
 	Event     string
 	Status    string
@@ -151,18 +151,37 @@ func readClaudeStats() string {
 
 func readInstanceStats(inst agentInstance) string {
 	if normalizeProvider(inst.Provider) == "Codex" {
-		if stats := readCodexStats(inst.SessionID, inst.Key); stats != "" {
-			return stats
+		if tokens, ok := readCodexTokenCount(inst.SessionID, inst.Key); ok {
+			return formatTokenStats(tokens)
 		}
 		return inst.Status
 	}
 	return readClaudeStats()
 }
 
+func readInstanceMetrics(inst agentInstance) string {
+	if normalizeProvider(inst.Provider) != "Codex" {
+		return ""
+	}
+	tokens, ok := readCodexTokenCount(inst.SessionID, inst.Key)
+	if !ok {
+		return ""
+	}
+	return formatTokenMetrics(tokens)
+}
+
 func readCodexStats(sessionID, cwd string) string {
+	tokens, ok := readCodexTokenCount(sessionID, cwd)
+	if !ok {
+		return ""
+	}
+	return formatTokenStats(tokens)
+}
+
+func readCodexTokenCount(sessionID, cwd string) (int64, bool) {
 	path := codexStatePath()
 	if path == "" {
-		return ""
+		return 0, false
 	}
 
 	dbURL := url.URL{
@@ -172,16 +191,12 @@ func readCodexStats(sessionID, cwd string) string {
 	}
 	db, err := sql.Open("sqlite3", dbURL.String())
 	if err != nil {
-		return ""
+		return 0, false
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
 
-	tokens, ok := codexTokensForThread(db, sessionID, cwd)
-	if !ok {
-		return ""
-	}
-	return formatTokenStats(tokens)
+	return codexTokensForThread(db, sessionID, cwd)
 }
 
 func codexStatePath() string {
@@ -218,13 +233,27 @@ func codexTokensForThread(db *sql.DB, sessionID, cwd string) (int64, bool) {
 }
 
 func formatTokenStats(tokens int64) string {
+	return "Tokens " + formatTokenCount(tokens)
+}
+
+func formatTokenMetrics(tokens int64) string {
+	return formatTokenCount(tokens) + " tok"
+}
+
+func formatTokenCount(tokens int64) string {
 	if tokens < 1000 {
-		return fmt.Sprintf("Tokens %d", tokens)
+		return fmt.Sprintf("%d", tokens)
 	}
 	if tokens < 1000000 {
-		return fmt.Sprintf("Tokens %.1fk", float64(tokens)/1000.0)
+		return formatScaledNumber(float64(tokens)/1000.0, "k")
 	}
-	return fmt.Sprintf("Tokens %.1fm", float64(tokens)/1000000.0)
+	return formatScaledNumber(float64(tokens)/1000000.0, "m")
+}
+
+func formatScaledNumber(value float64, suffix string) string {
+	text := fmt.Sprintf("%.1f", value)
+	text = strings.TrimSuffix(text, ".0")
+	return text + suffix
 }
 
 func eventStateAndStatus(provider, event string) (byte, string, bool) {
@@ -266,7 +295,6 @@ func markDisconnected(err error) {
 	connMu.Lock()
 	wasConnected := connected
 	connected = false
-	multiSupported = false
 	connMu.Unlock()
 	if err != nil && wasConnected {
 		fmt.Printf("[ble] disconnected: %v\n", err)
@@ -305,38 +333,9 @@ func isGattInProgress(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "in progress")
 }
 
-func sendState(v byte) {
-	connMu.RLock()
-	ok := connected
-	ch := stateCh
-	connMu.RUnlock()
-	if !ok {
-		return
-	}
-	fmt.Printf("[ble] state %d\n", v)
-	if err := writeCharacteristic(ch, []byte{v}); err != nil {
-		markDisconnected(err)
-	}
-}
-
-func sendStats(text string) {
-	connMu.RLock()
-	ok := connected
-	ch := statsCh
-	connMu.RUnlock()
-	if !ok {
-		return
-	}
-	text = sanitizeField(text, maxStatusLen)
-	fmt.Printf("[ble] stats: %s\n", text)
-	if err := writeCharacteristic(ch, []byte(text)); err != nil {
-		markDisconnected(err)
-	}
-}
-
 func sendMultiPayload(payload string) bool {
 	connMu.RLock()
-	ok := connected && multiSupported
+	ok := connected
 	ch := multiCh
 	connMu.RUnlock()
 	if !ok {
@@ -351,18 +350,19 @@ func sendMultiPayload(payload string) bool {
 }
 
 func sendInstance(inst agentInstance) {
-	payload := fmt.Sprintf("U\t%s\t%d\t%s\t%s\t%s\t%s",
+	metrics := readInstanceMetrics(inst)
+	payload := fmt.Sprintf("U\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
 		inst.ID,
 		inst.State,
 		sanitizeField(inst.Label, maxLabelLen),
 		sanitizeField(inst.Status, maxStatusLen),
 		sanitizeField(normalizeProvider(inst.Provider), maxProviderLen),
 		sanitizeOptionalField(inst.Branch, maxBranchLen),
+		sanitizeOptionalField(metrics, maxMetricsLen),
+		sanitizeOptionalField(inst.Model, maxModelLen),
+		sanitizeOptionalField(inst.Effort, maxEffortLen),
 	)
-	if !sendMultiPayload(payload) {
-		sendState(inst.State)
-		sendStats(inst.Status)
-	}
+	sendMultiPayload(payload)
 }
 
 func sendDelete(id string) {
@@ -400,8 +400,6 @@ func onAction(buf []byte) {
 
 func connectLoop() {
 	srvUUID, _ := bluetooth.ParseUUID(svcUUID)
-	stUUID, _ := bluetooth.ParseUUID(stateUUID)
-	stsUUID, _ := bluetooth.ParseUUID(statsUUID)
 	actUUID, _ := bluetooth.ParseUUID(actionUUID)
 	nmUUID, _ := bluetooth.ParseUUID(nameUUID)
 	maUUID, _ := bluetooth.ParseUUID(multiUUID)
@@ -464,23 +462,7 @@ func connectLoop() {
 
 		svc := svcs[0]
 
-		chars, err := svc.DiscoverCharacteristics([]bluetooth.UUID{stUUID})
-		if err != nil || len(chars) == 0 {
-			fmt.Println("[ble] state char not found")
-			dev.Disconnect()
-			continue
-		}
-		sc := chars[0]
-
-		chars, err = svc.DiscoverCharacteristics([]bluetooth.UUID{stsUUID})
-		if err != nil || len(chars) == 0 {
-			fmt.Println("[ble] stats char not found")
-			dev.Disconnect()
-			continue
-		}
-		ssc := chars[0]
-
-		chars, err = svc.DiscoverCharacteristics([]bluetooth.UUID{actUUID})
+		chars, err := svc.DiscoverCharacteristics([]bluetooth.UUID{actUUID})
 		if err != nil || len(chars) == 0 {
 			fmt.Println("[ble] action char not found")
 			dev.Disconnect()
@@ -502,35 +484,24 @@ func connectLoop() {
 			fmt.Printf("[ble] sent hostname: %s\n", hostname)
 		}
 
-		var mc bluetooth.DeviceCharacteristic
-		multiOK := false
 		chars, err = svc.DiscoverCharacteristics([]bluetooth.UUID{maUUID})
-		if err == nil && len(chars) > 0 {
-			mc = chars[0]
-			multiOK = true
-			fmt.Println("[ble] multi-agent char found")
-		} else {
-			fmt.Println("[ble] multi-agent char not found, using legacy protocol")
+		if err != nil || len(chars) == 0 {
+			fmt.Println("[ble] multi-agent char not found")
+			dev.Disconnect()
+			continue
 		}
+		mc := chars[0]
+		fmt.Println("[ble] multi-agent char found")
 
 		connMu.Lock()
-		stateCh = sc
-		statsCh = ssc
 		actionCh = ac
 		nameCh = nc
 		multiCh = mc
 		connected = true
-		multiSupported = multiOK
 		connMu.Unlock()
 
 		fmt.Println("[ble] connected")
-
-		if multiOK {
-			sendSnapshot()
-		} else {
-			sendStats(readClaudeStats())
-			sendState(0)
-		}
+		sendSnapshot()
 	}
 }
 
@@ -582,7 +553,7 @@ func handleConn(conn net.Conn) {
 	}
 
 	key := canonicalPath(ev.CWD)
-	id := instanceID(instanceKey(provider, key, ev.SessionID))
+	id := instanceID(instanceKey(provider, key, ev.Process))
 
 	instancesMu.Lock()
 	inst, ok := instances[id]
@@ -593,7 +564,12 @@ func handleConn(conn net.Conn) {
 	inst.UserLabel = strings.TrimSpace(ev.Label)
 	inst.Provider = provider
 	inst.SessionID = strings.TrimSpace(ev.SessionID)
-	inst.Model = strings.TrimSpace(ev.Model)
+	if model := strings.TrimSpace(ev.Model); model != "" {
+		inst.Model = model
+	}
+	if effort := strings.TrimSpace(ev.Effort); effort != "" {
+		inst.Effort = effort
+	}
 	inst.Branch = currentGitBranch(key)
 	inst.Event = ev.Event
 	inst.State = state
@@ -669,18 +645,6 @@ func autoIdle(id string, eventTime time.Time) {
 	instancesMu.Unlock()
 
 	sendSnapshot()
-}
-
-func statsSync() {
-	for range time.NewTicker(10 * time.Second).C {
-		connMu.RLock()
-		ok := connected
-		multiOK := multiSupported
-		connMu.RUnlock()
-		if ok && !multiOK {
-			sendStats(readClaudeStats())
-		}
-	}
 }
 
 func healthLoop() {
@@ -828,13 +792,12 @@ func instanceID(key string) string {
 	return fmt.Sprintf("%08x", h.Sum32())
 }
 
-func instanceKey(provider, cwd, sessionID string) string {
+func instanceKey(provider, cwd string, process processRef) string {
 	provider = normalizeProvider(provider)
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return provider + "\x00" + cwd
+	if process.PID > 0 && strings.TrimSpace(process.StartTime) != "" {
+		return fmt.Sprintf("%s\x00process\x00%d\x00%s", provider, process.PID, process.StartTime)
 	}
-	return provider + "\x00" + cwd + "\x00" + sessionID
+	return provider + "\x00cwd\x00" + cwd
 }
 
 func deriveLabelsLocked() {
@@ -924,7 +887,6 @@ func runDaemon() error {
 		return fmt.Errorf("enable bluetooth adapter: %w", err)
 	}
 	go unixServer()
-	go statsSync()
 	go healthLoop()
 	go pruneLoop()
 	connectLoop()

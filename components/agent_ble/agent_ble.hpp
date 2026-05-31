@@ -13,7 +13,7 @@ extern "C" {
 // Stats (Write):  00000000-0000-a359-42f0-4467de900003  UTF-8 string, max ~24 chars
 // Action (Notify): 00000000-0000-a359-42f0-4467de900004  1 byte notification (touch ack)
 // Name (Write):   00000000-0000-a359-42f0-4467de900005  Peer device name, max 32 chars
-// Multi (Write):  00000000-0000-a359-42f0-4467de900006  U\tid\tstate\tlabel\tstatus\tprovider\tbranch
+// Multi (Write):  00000000-0000-a359-42f0-4467de900006  U\tid\tstate\tlabel\tstatus\tprovider\tbranch\tmetrics\tmodel\teffort
 #define AGENT_SVC_UUID    0x01, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 #define AGENT_STATE_CHAR  0x02, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 #define AGENT_STATS_CHAR  0x03, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -27,6 +27,9 @@ extern "C" {
 #define AGENT_INSTANCE_STATUS_LEN 32
 #define AGENT_INSTANCE_PROVIDER_LEN 12
 #define AGENT_INSTANCE_BRANCH_LEN 24
+#define AGENT_INSTANCE_METRICS_LEN 20
+#define AGENT_INSTANCE_MODEL_LEN 24
+#define AGENT_INSTANCE_EFFORT_LEN 12
 
 enum agent_state {
     AGENT_STATE_IDLE     = 0,
@@ -41,6 +44,9 @@ typedef struct {
     char status[AGENT_INSTANCE_STATUS_LEN + 1];
     char provider[AGENT_INSTANCE_PROVIDER_LEN + 1];
     char branch[AGENT_INSTANCE_BRANCH_LEN + 1];
+    char metrics[AGENT_INSTANCE_METRICS_LEN + 1];
+    char model[AGENT_INSTANCE_MODEL_LEN + 1];
+    char effort[AGENT_INSTANCE_EFFORT_LEN + 1];
     uint8_t state;
     uint32_t updated_ms;
     uint32_t priority_entered_ms;

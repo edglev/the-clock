@@ -169,7 +169,8 @@ static void sync_legacy_globals_locked(const agent_instance_info_t *inst)
 }
 
 static void upsert_instance(const char *id, uint8_t state, const char *label, const char *status,
-                            const char *provider, const char *branch)
+                            const char *provider, const char *branch, const char *metrics,
+                            const char *model, const char *effort)
 {
     if (!id || !id[0]) return;
     if (state > AGENT_STATE_SUCCESS) state = AGENT_STATE_IDLE;
@@ -199,6 +200,9 @@ static void upsert_instance(const char *id, uint8_t state, const char *label, co
     copy_clean(s_instances[idx].status, sizeof(s_instances[idx].status), status && status[0] ? status : "Idle");
     copy_clean(s_instances[idx].provider, sizeof(s_instances[idx].provider), provider && provider[0] ? provider : "Agent");
     copy_clean(s_instances[idx].branch, sizeof(s_instances[idx].branch), branch ? branch : "");
+    copy_clean(s_instances[idx].metrics, sizeof(s_instances[idx].metrics), metrics ? metrics : "");
+    copy_clean(s_instances[idx].model, sizeof(s_instances[idx].model), model ? model : "");
+    copy_clean(s_instances[idx].effort, sizeof(s_instances[idx].effort), effort ? effort : "");
     s_instances[idx].state = state;
     s_instances[idx].updated_ms = updated;
     if (!existing || previous_priority != new_priority || s_instances[idx].priority_entered_ms == 0) {
@@ -239,41 +243,50 @@ static void delete_instance(const char *id)
 static void upsert_legacy_instance(void)
 {
     upsert_instance("legacy", g_ble_state, s_current_peer_name[0] ? s_current_peer_name : "Agent",
-                    g_ble_stats_text, "Agent", "");
+                    g_ble_stats_text, "Agent", "", "", "", "");
+}
+
+static int split_tab_fields(char *payload, char **fields, int max_fields)
+{
+    if (!payload || !fields || max_fields <= 0) return 0;
+
+    int count = 1;
+    fields[0] = payload;
+    for (char *p = payload; *p; p++) {
+        if (*p == '\t') {
+            *p = '\0';
+            if (count >= max_fields) return count + 1;
+            fields[count++] = p + 1;
+        }
+    }
+    return count;
 }
 
 static void handle_multi_write(const uint8_t *data, int data_len)
 {
-    char payload[220];
+    char payload[300];
     int len = data_len < (int)sizeof(payload) - 1 ? data_len : (int)sizeof(payload) - 1;
     memcpy(payload, data, len);
     payload[len] = '\0';
 
-    char *save = NULL;
-    char *op = strtok_r(payload, "\t", &save);
-    if (!op) return;
+    char *fields[10] = {};
+    int field_count = split_tab_fields(payload, fields, 10);
+    if (field_count <= 0 || !fields[0]) return;
 
-    if (op[0] == 'D') {
-        char *id = strtok_r(NULL, "\t", &save);
-        delete_instance(id);
-        ESP_LOGI(TAG, "Instance deleted: %s", id ? id : "");
+    if (fields[0][0] == 'D') {
+        if (field_count != 2 || !fields[1][0]) return;
+        delete_instance(fields[1]);
+        ESP_LOGI(TAG, "Instance deleted: %s", fields[1]);
         return;
     }
 
-    if (op[0] != 'U') return;
+    if (fields[0][0] != 'U' || field_count != 10) return;
+    if (!fields[1][0] || !fields[2][0] || !fields[3][0] || !fields[4][0] || !fields[5][0]) return;
 
-    char *id = strtok_r(NULL, "\t", &save);
-    char *state_s = strtok_r(NULL, "\t", &save);
-    char *label = strtok_r(NULL, "\t", &save);
-    char *status = strtok_r(NULL, "\t", &save);
-    char *provider = strtok_r(NULL, "\t", &save);
-    char *branch = strtok_r(NULL, "\t", &save);
-    if (!id || !state_s || !label) return;
-
-    uint8_t state = (uint8_t)(state_s[0] - '0');
-    upsert_instance(id, state, label, status ? status : "", provider ? provider : "", branch ? branch : "");
-    ESP_LOGI(TAG, "Instance update: id=%s state=%u label=%s provider=%s branch=%s",
-             id, state, label, provider ? provider : "", branch ? branch : "");
+    uint8_t state = (uint8_t)(fields[2][0] - '0');
+    upsert_instance(fields[1], state, fields[3], fields[4], fields[5], fields[6], fields[7], fields[8], fields[9]);
+    ESP_LOGI(TAG, "Instance update: id=%s state=%u label=%s provider=%s branch=%s metrics=%s model=%s effort=%s",
+             fields[1], state, fields[3], fields[5], fields[6], fields[7], fields[8], fields[9]);
 }
 
 static void load_bonds(void)

@@ -26,6 +26,7 @@ static lv_draw_buf_t *draw_buf;
 static lv_obj_t *label_provider;
 static lv_obj_t *label_project;
 static lv_obj_t *label_branch;
+static lv_obj_t *label_model_effort;
 static lv_obj_t *label_stats;
 static lv_obj_t *label_agent_count;
 static lv_obj_t *label_batt_icon;
@@ -44,6 +45,12 @@ static int   success_countdown = 0;
 static uint32_t instances_signature = 0;
 static uint8_t instances_refresh_tick = 0;
 static bool status_ring_visible = true;
+static agent_instance_info_t provider_summary_items[AGENT_MAX_INSTANCES];
+static agent_instance_info_t instances_page_items[AGENT_MAX_INSTANCES];
+static agent_instance_info_t focused_canvas;
+static agent_instance_info_t focused_header;
+static agent_instance_info_t focused_instances;
+static agent_instance_info_t focused_timer;
 
 static uint32_t now_ms(void)
 {
@@ -77,19 +84,35 @@ static const char *provider_label(const char *provider)
     return (provider && provider[0]) ? provider : "Agent";
 }
 
+static void format_model_effort(char *buf, size_t buf_size, const char *model, const char *effort)
+{
+    if (!buf || buf_size == 0) return;
+
+    bool has_model = model && model[0];
+    bool has_effort = effort && effort[0];
+    if (has_model && has_effort) {
+        snprintf(buf, buf_size, "%s %s", model, effort);
+    } else if (has_model) {
+        snprintf(buf, buf_size, "%s", model);
+    } else if (has_effort) {
+        snprintf(buf, buf_size, "%s", effort);
+    } else {
+        buf[0] = '\0';
+    }
+}
+
 static void format_provider_summary(char *buf, size_t buf_size, const agent_instance_info_t *focused)
 {
     if (!buf || buf_size == 0) return;
 
-    agent_instance_info_t items[AGENT_MAX_INSTANCES];
-    int count = g_ble_connected ? agent_ble_get_instances(items, AGENT_MAX_INSTANCES) : 0;
+    int count = g_ble_connected ? agent_ble_get_instances(provider_summary_items, AGENT_MAX_INSTANCES) : 0;
     bool has_claude = false;
     bool has_codex = false;
     bool mixed = false;
     char first[AGENT_INSTANCE_PROVIDER_LEN + 1] = "";
 
     for (int i = 0; i < count; i++) {
-        const char *provider = provider_label(items[i].provider);
+        const char *provider = provider_label(provider_summary_items[i].provider);
         if (strcmp(provider, "Claude") == 0) has_claude = true;
         if (strcmp(provider, "Codex") == 0) has_codex = true;
 
@@ -168,8 +191,7 @@ static void update_canvas(void)
     lv_draw_arc_dsc_init(&arc_dsc);
     arc_dsc.width = 2;
 
-    agent_instance_info_t focused;
-    bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused);
+    bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused_canvas);
 
     if (!has_focus) {
         arc_dsc.color = lv_color_hex(0x555555);
@@ -183,7 +205,7 @@ static void update_canvas(void)
         return;
     }
 
-    switch (focused.state) {
+    switch (focused_canvas.state) {
     case AGENT_STATE_IDLE: {
         arc_dsc.color = lv_color_hex(COLOR_CYAN_DIM);
         arc_dsc.radius = 30;
@@ -254,35 +276,41 @@ static void update_header(void)
                                 0);
     lv_label_set_text(label_batt, buf);
 
-    agent_instance_info_t focused;
-    bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused);
+    bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused_header);
     int count = g_ble_connected ? agent_ble_get_instance_count() : 0;
 
     if (!g_ble_connected) {
         if (label_provider) lv_label_set_text(label_provider, "");
         if (label_project) lv_label_set_text(label_project, "");
         if (label_branch) lv_label_set_text(label_branch, "");
+        if (label_model_effort) lv_label_set_text(label_model_effort, "");
         lv_label_set_text(label_stats, "Waiting for connection");
-        lv_obj_set_style_text_color(label_stats, lv_color_hex(0x888888), 0);
+        lv_obj_set_style_text_color(label_stats, lv_color_hex(0xB0B0B0), 0);
         if (label_agent_count) lv_label_set_text(label_agent_count, "");
     } else if (has_focus) {
         char provider[32];
-        const char *status = focused.status[0] ? focused.status : agent_state_label(focused.state);
-        format_provider_summary(provider, sizeof(provider), &focused);
+        const char *status = focused_header.status[0] ? focused_header.status : agent_state_label(focused_header.state);
+        format_provider_summary(provider, sizeof(provider), &focused_header);
         if (label_provider) {
             lv_label_set_text(label_provider, provider);
             lv_obj_set_style_text_color(label_provider, lv_color_hex(COLOR_CYAN), 0);
         }
         if (label_project) {
-            lv_label_set_text(label_project, focused.label);
+            lv_label_set_text(label_project, focused_header.label);
             lv_obj_set_style_text_color(label_project, lv_color_hex(0xFFFFFF), 0);
         }
         if (label_branch) {
-            lv_label_set_text(label_branch, focused.branch);
-            lv_obj_set_style_text_color(label_branch, lv_color_hex(0x888888), 0);
+            lv_label_set_text(label_branch, focused_header.branch);
+            lv_obj_set_style_text_color(label_branch, lv_color_hex(0xB0B0B0), 0);
+        }
+        if (label_model_effort) {
+            char model_effort[48];
+            format_model_effort(model_effort, sizeof(model_effort), focused_header.model, focused_header.effort);
+            lv_label_set_text(label_model_effort, model_effort);
+            lv_obj_set_style_text_color(label_model_effort, lv_color_hex(0xE0E0E0), 0);
         }
         lv_label_set_text(label_stats, status);
-        lv_obj_set_style_text_color(label_stats, agent_state_color(focused.state), 0);
+        lv_obj_set_style_text_color(label_stats, agent_state_color(focused_header.state), 0);
 
         if (label_agent_count) {
             char count_text[32];
@@ -292,17 +320,18 @@ static void update_header(void)
                 count_text[0] = '\0';
             }
             lv_label_set_text(label_agent_count, count_text);
-            lv_obj_set_style_text_color(label_agent_count, lv_color_hex(0x888888), 0);
+            lv_obj_set_style_text_color(label_agent_count, lv_color_hex(0xB0B0B0), 0);
         }
     } else {
         if (label_provider) lv_label_set_text(label_provider, "");
         if (label_project) lv_label_set_text(label_project, "");
         if (label_branch) lv_label_set_text(label_branch, "");
+        if (label_model_effort) lv_label_set_text(label_model_effort, "");
         lv_label_set_text(label_stats, "Waiting for events");
-        lv_obj_set_style_text_color(label_stats, lv_color_hex(0x888888), 0);
+        lv_obj_set_style_text_color(label_stats, lv_color_hex(0xB0B0B0), 0);
         if (label_agent_count) {
             lv_label_set_text(label_agent_count, "Connected");
-            lv_obj_set_style_text_color(label_agent_count, lv_color_hex(0x888888), 0);
+            lv_obj_set_style_text_color(label_agent_count, lv_color_hex(0xB0B0B0), 0);
         }
     }
     g_ble_stats_changed = false;
@@ -383,24 +412,25 @@ static void update_instances_page(void)
 {
     if (!instances_list) return;
 
-    agent_instance_info_t items[AGENT_MAX_INSTANCES];
-    agent_instance_info_t focused;
-    bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused);
-    int count = g_ble_connected ? agent_ble_get_instances(items, AGENT_MAX_INSTANCES) : 0;
+    bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused_instances);
+    int count = g_ble_connected ? agent_ble_get_instances(instances_page_items, AGENT_MAX_INSTANCES) : 0;
 
     uint32_t sig = 2166136261u;
     sig = hash_bytes(sig, &g_ble_connected, sizeof(g_ble_connected));
     sig = hash_bytes(sig, &count, sizeof(count));
-    if (has_focus) sig = hash_bytes(sig, focused.id, strlen(focused.id));
+    if (has_focus) sig = hash_bytes(sig, focused_instances.id, strlen(focused_instances.id));
     for (int i = 0; i < count; i++) {
-        sig = hash_bytes(sig, &items[i].state, sizeof(items[i].state));
-        sig = hash_bytes(sig, &items[i].updated_ms, sizeof(items[i].updated_ms));
-        sig = hash_bytes(sig, items[i].id, strlen(items[i].id));
-        sig = hash_bytes(sig, items[i].label, strlen(items[i].label));
-        sig = hash_bytes(sig, items[i].status, strlen(items[i].status));
-        sig = hash_bytes(sig, items[i].provider, strlen(items[i].provider));
-        sig = hash_bytes(sig, items[i].branch, strlen(items[i].branch));
-        sig = hash_bytes(sig, &items[i].priority_entered_ms, sizeof(items[i].priority_entered_ms));
+        sig = hash_bytes(sig, &instances_page_items[i].state, sizeof(instances_page_items[i].state));
+        sig = hash_bytes(sig, &instances_page_items[i].updated_ms, sizeof(instances_page_items[i].updated_ms));
+        sig = hash_bytes(sig, instances_page_items[i].id, strlen(instances_page_items[i].id));
+        sig = hash_bytes(sig, instances_page_items[i].label, strlen(instances_page_items[i].label));
+        sig = hash_bytes(sig, instances_page_items[i].status, strlen(instances_page_items[i].status));
+        sig = hash_bytes(sig, instances_page_items[i].provider, strlen(instances_page_items[i].provider));
+        sig = hash_bytes(sig, instances_page_items[i].branch, strlen(instances_page_items[i].branch));
+        sig = hash_bytes(sig, instances_page_items[i].metrics, strlen(instances_page_items[i].metrics));
+        sig = hash_bytes(sig, instances_page_items[i].model, strlen(instances_page_items[i].model));
+        sig = hash_bytes(sig, instances_page_items[i].effort, strlen(instances_page_items[i].effort));
+        sig = hash_bytes(sig, &instances_page_items[i].priority_entered_ms, sizeof(instances_page_items[i].priority_entered_ms));
     }
     if (sig == instances_signature) return;
     instances_signature = sig;
@@ -411,7 +441,7 @@ static void update_instances_page(void)
         lv_obj_t *msg = lv_label_create(instances_list);
         lv_label_set_text(msg, "Waiting for connection");
         lv_obj_set_style_text_color(msg, lv_color_hex(0x888888), 0);
-        lv_obj_set_style_text_font(msg, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(msg, &lv_font_montserrat_20, 0);
         return;
     }
 
@@ -419,16 +449,16 @@ static void update_instances_page(void)
         lv_obj_t *msg = lv_label_create(instances_list);
         lv_label_set_text(msg, "No active agents");
         lv_obj_set_style_text_color(msg, lv_color_hex(0x888888), 0);
-        lv_obj_set_style_text_font(msg, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_font(msg, &lv_font_montserrat_20, 0);
         return;
     }
 
     for (int i = 0; i < count; i++) {
-        bool is_focused = has_focus && strcmp(items[i].id, focused.id) == 0;
-        lv_color_t color = agent_state_color(items[i].state);
+        bool is_focused = has_focus && strcmp(instances_page_items[i].id, focused_instances.id) == 0;
+        lv_color_t color = agent_state_color(instances_page_items[i].state);
 
         lv_obj_t *row = lv_obj_create(instances_list);
-        lv_obj_set_size(row, 320, 48);
+        lv_obj_set_size(row, 330, 82);
         lv_obj_set_style_bg_color(row, lv_color_hex(is_focused ? 0x1A1A1A : 0x111111), 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
         lv_obj_set_style_border_width(row, is_focused ? 2 : 1, 0);
@@ -440,32 +470,55 @@ static void update_instances_page(void)
 
         lv_obj_t *dot = lv_obj_create(row);
         lv_obj_remove_style_all(dot);
-        lv_obj_set_size(dot, 10, 10);
+        lv_obj_set_size(dot, 12, 12);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(dot, color, 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_align(dot, LV_ALIGN_LEFT_MID, 10, 0);
+        lv_obj_align(dot, LV_ALIGN_LEFT_MID, 12, 0);
 
+        char title[96];
+        snprintf(title, sizeof(title), "%s - %s",
+                 provider_label(instances_page_items[i].provider),
+                 instances_page_items[i].label);
         lv_obj_t *name = lv_label_create(row);
-        lv_label_set_text(name, items[i].label);
-        lv_obj_set_width(name, 210);
+        lv_label_set_text(name, title);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_width(name, 270);
+        lv_obj_set_height(name, 24);
         lv_obj_set_style_text_color(name, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_text_font(name, &lv_font_montserrat_14, 0);
-        lv_obj_align(name, LV_ALIGN_TOP_LEFT, 28, 6);
+        lv_obj_set_style_text_font(name, &lv_font_montserrat_20, 0);
+        lv_obj_align(name, LV_ALIGN_TOP_LEFT, 34, 7);
 
-        char meta[80];
+        char meta[128];
+        char model_effort[48];
         char age[12];
-        format_age(items[i].updated_ms, age, sizeof(age));
-        snprintf(meta, sizeof(meta), "%s · %s · %s",
-                 provider_label(items[i].provider),
-                 items[i].status[0] ? items[i].status : agent_state_label(items[i].state),
-                 age);
+        const char *branch = instances_page_items[i].branch[0] ? instances_page_items[i].branch : "no branch";
+        const char *metrics = instances_page_items[i].metrics[0] ? instances_page_items[i].metrics :
+                              (instances_page_items[i].status[0] ? instances_page_items[i].status :
+                               agent_state_label(instances_page_items[i].state));
+        format_model_effort(model_effort, sizeof(model_effort),
+                            instances_page_items[i].model,
+                            instances_page_items[i].effort);
+        format_age(instances_page_items[i].updated_ms, age, sizeof(age));
+        snprintf(meta, sizeof(meta), "%s - %s - %s", branch, metrics, age);
+
+        lv_obj_t *model = lv_label_create(row);
+        lv_label_set_text(model, model_effort);
+        lv_label_set_long_mode(model, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_width(model, 270);
+        lv_obj_set_height(model, 20);
+        lv_obj_set_style_text_color(model, lv_color_hex(0xC8C8C8), 0);
+        lv_obj_set_style_text_font(model, &lv_font_montserrat_16, 0);
+        lv_obj_align(model, LV_ALIGN_TOP_LEFT, 34, 34);
+
         lv_obj_t *status = lv_label_create(row);
         lv_label_set_text(status, meta);
-        lv_obj_set_width(status, 250);
-        lv_obj_set_style_text_color(status, lv_color_hex(0x888888), 0);
-        lv_obj_set_style_text_font(status, &lv_font_montserrat_12, 0);
-        lv_obj_align(status, LV_ALIGN_BOTTOM_LEFT, 28, -6);
+        lv_label_set_long_mode(status, LV_LABEL_LONG_MODE_DOTS);
+        lv_obj_set_width(status, 270);
+        lv_obj_set_height(status, 18);
+        lv_obj_set_style_text_color(status, lv_color_hex(0x999999), 0);
+        lv_obj_set_style_text_font(status, &lv_font_montserrat_14, 0);
+        lv_obj_align(status, LV_ALIGN_TOP_LEFT, 34, 58);
     }
 }
 
@@ -476,14 +529,13 @@ static void timer_cb(lv_timer_t *t)
     rot_angle = (rot_angle + 6) % 360;
     if (success_countdown > 0) success_countdown--;
 
-    agent_instance_info_t focused;
-    bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused);
+    bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused_timer);
 
     lv_color_t ring_color;
     if (!has_focus) {
         ring_color = lv_color_hex(0x555555);
     } else {
-        switch (focused.state) {
+        switch (focused_timer.state) {
         case AGENT_STATE_IDLE:    ring_color = lv_color_hex(COLOR_CYAN); break;
         case AGENT_STATE_THINKING: ring_color = lv_color_hex(0x9933FF); break;
         case AGENT_STATE_WAITING:  ring_color = (rot_angle / 15 % 2 == 0) ? lv_color_hex(0xFFAA00) : lv_color_hex(0xFF0000); break;
@@ -583,15 +635,15 @@ static void create_page_agent(lv_obj_t *tile)
     lv_obj_set_width(label_provider, 220);
     lv_obj_set_style_text_align(label_provider, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_provider, lv_color_hex(COLOR_CYAN), 0);
-    lv_obj_set_style_text_font(label_provider, &lv_font_montserrat_16, 0);
-    lv_obj_align(label_provider, LV_ALIGN_TOP_MID, 0, 28);
+    lv_obj_set_style_text_font(label_provider, &lv_font_montserrat_20, 0);
+    lv_obj_align(label_provider, LV_ALIGN_TOP_MID, 0, 24);
 
     label_agent_count = lv_label_create(tile);
     lv_label_set_text(label_agent_count, "");
     lv_obj_set_width(label_agent_count, 220);
     lv_obj_set_style_text_align(label_agent_count, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(label_agent_count, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(label_agent_count, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(label_agent_count, lv_color_hex(0xB0B0B0), 0);
+    lv_obj_set_style_text_font(label_agent_count, &lv_font_montserrat_16, 0);
     lv_obj_align(label_agent_count, LV_ALIGN_TOP_MID, 0, 52);
 
     label_project = lv_label_create(tile);
@@ -600,26 +652,35 @@ static void create_page_agent(lv_obj_t *tile)
     lv_obj_set_width(label_project, 320);
     lv_obj_set_style_text_align(label_project, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_project, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(label_project, &lv_font_montserrat_20, 0);
-    lv_obj_align(label_project, LV_ALIGN_TOP_MID, 0, 88);
+    lv_obj_set_style_text_font(label_project, &lv_font_montserrat_24, 0);
+    lv_obj_align(label_project, LV_ALIGN_TOP_MID, 0, 82);
 
     label_branch = lv_label_create(tile);
     lv_label_set_text(label_branch, "");
     lv_label_set_long_mode(label_branch, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_width(label_branch, 320);
+    lv_obj_set_width(label_branch, 340);
     lv_obj_set_style_text_align(label_branch, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(label_branch, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(label_branch, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(label_branch, lv_color_hex(0xB0B0B0), 0);
+    lv_obj_set_style_text_font(label_branch, &lv_font_montserrat_20, 0);
     lv_obj_align(label_branch, LV_ALIGN_TOP_MID, 0, 114);
+
+    label_model_effort = lv_label_create(tile);
+    lv_label_set_text(label_model_effort, "");
+    lv_label_set_long_mode(label_model_effort, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_width(label_model_effort, 340);
+    lv_obj_set_style_text_align(label_model_effort, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label_model_effort, lv_color_hex(0xE0E0E0), 0);
+    lv_obj_set_style_text_font(label_model_effort, &lv_font_montserrat_20, 0);
+    lv_obj_align(label_model_effort, LV_ALIGN_TOP_MID, 0, 142);
 
     label_stats = lv_label_create(tile);
     lv_label_set_text(label_stats, "Waiting for connection");
     lv_label_set_long_mode(label_stats, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_width(label_stats, 340);
     lv_obj_set_style_text_align(label_stats, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(label_stats, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(label_stats, &lv_font_montserrat_14, 0);
-    lv_obj_align(label_stats, LV_ALIGN_TOP_MID, 0, 136);
+    lv_obj_set_style_text_color(label_stats, lv_color_hex(0xB0B0B0), 0);
+    lv_obj_set_style_text_font(label_stats, &lv_font_montserrat_20, 0);
+    lv_obj_align(label_stats, LV_ALIGN_TOP_MID, 0, 170);
 
     lv_obj_t *batt_row = lv_obj_create(tile);
     lv_obj_remove_style_all(batt_row);
@@ -647,19 +708,19 @@ static void create_page_instances(lv_obj_t *tile)
     lv_obj_t *title = lv_label_create(tile);
     lv_label_set_text(title, "Agents");
     lv_obj_set_style_text_color(title, lv_color_hex(COLOR_CYAN), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 38);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 36);
 
     instances_list = lv_obj_create(tile);
-    lv_obj_set_size(instances_list, 350, 310);
-    lv_obj_align(instances_list, LV_ALIGN_TOP_MID, 0, 86);
+    lv_obj_set_size(instances_list, 360, 318);
+    lv_obj_align(instances_list, LV_ALIGN_TOP_MID, 0, 84);
     lv_obj_set_style_bg_opa(instances_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(instances_list, 0, 0);
     lv_obj_set_style_outline_width(instances_list, 0, 0);
     lv_obj_set_style_shadow_width(instances_list, 0, 0);
     lv_obj_set_style_radius(instances_list, 0, 0);
     lv_obj_set_style_pad_all(instances_list, 8, 0);
-    lv_obj_set_style_pad_row(instances_list, 8, 0);
+    lv_obj_set_style_pad_row(instances_list, 10, 0);
     lv_obj_set_scroll_dir(instances_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(instances_list, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_flex_flow(instances_list, LV_FLEX_FLOW_COLUMN);

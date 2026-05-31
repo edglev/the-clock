@@ -22,17 +22,37 @@ func TestEventStateAndStatus(t *testing.T) {
 	}
 }
 
-func TestInstanceKeyIncludesProviderAndSession(t *testing.T) {
+func TestInstanceKeyUsesProcessBeforeSession(t *testing.T) {
 	cwd := "/tmp/project"
-	codexA := instanceID(instanceKey("codex", cwd, "session-a"))
-	codexB := instanceID(instanceKey("codex", cwd, "session-b"))
-	claude := instanceID(instanceKey("claude", cwd, "session-a"))
+	procA := processRef{PID: 123, StartTime: "555"}
+	procB := processRef{PID: 124, StartTime: "777"}
+	codexA := instanceID(instanceKey("codex", cwd, procA))
+	codexSameProcess := instanceID(instanceKey("codex", cwd, procA))
+	codexB := instanceID(instanceKey("codex", cwd, procB))
+	claude := instanceID(instanceKey("claude", cwd, procA))
 
+	if codexA != codexSameProcess {
+		t.Fatal("same Codex process did not collapse to one instance id")
+	}
 	if codexA == codexB {
-		t.Fatal("different Codex sessions collapsed to one instance id")
+		t.Fatal("different Codex processes collapsed to one instance id")
 	}
 	if codexA == claude {
 		t.Fatal("different providers collapsed to one instance id")
+	}
+}
+
+func TestInstanceKeyFallsBackToProviderAndCWD(t *testing.T) {
+	cwd := "/tmp/project"
+	codexA := instanceID(instanceKey("codex", cwd, processRef{}))
+	codexB := instanceID(instanceKey("codex", cwd, processRef{}))
+	claude := instanceID(instanceKey("claude", cwd, processRef{}))
+
+	if codexA != codexB {
+		t.Fatal("same provider and cwd without process did not collapse")
+	}
+	if codexA == claude {
+		t.Fatal("different providers collapsed to one fallback instance id")
 	}
 }
 
@@ -84,6 +104,14 @@ func TestCodexTokensForThread(t *testing.T) {
 
 	if stats := formatTokenStats(tokens); stats != "Tokens 4.6k" {
 		t.Fatalf("formatted stats = %q", stats)
+	}
+
+	if metrics := formatTokenMetrics(423); metrics != "423 tok" {
+		t.Fatalf("formatted small metrics = %q", metrics)
+	}
+
+	if metrics := formatTokenMetrics(tokens); metrics != "4.6k tok" {
+		t.Fatalf("formatted metrics = %q", metrics)
 	}
 }
 

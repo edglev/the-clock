@@ -98,6 +98,10 @@ The installer updates `~/.codex/hooks.json` for `SessionStart`, `UserPromptSubmi
 
 Codex token stats are read from `~/.codex/state_5.sqlite` when available. If the database is missing or its schema changes, the daemon falls back to lifecycle status text.
 
+## Project Assumptions
+
+This project is for one user, one ESP32-S3 device, and one host machine. Do not preserve backwards compatibility with older firmware, daemon builds, payload shapes, or host configurations unless explicitly requested.
+
 ## Architecture
 
 ```
@@ -110,7 +114,7 @@ Codex token stats are read from `~/.codex/state_5.sqlite` when available. If the
 └─────────────────┘                    └──────────────────┘               └──────────────────┘
 ```
 
-The `agent-viewer hook` subcommand sends JSON to `/tmp/agent-viewer.sock` with `event`, `cwd`, `provider`, optional `session_id`, optional `label`, optional `model`, and `timestamp_ms`. The `agent-viewer daemon` subcommand aggregates by provider, canonical worktree path, and session id when available, then derives an 8-character instance id for BLE updates.
+The `agent-viewer hook` subcommand sends JSON to `/tmp/agent-viewer.sock` with `event`, `cwd`, `provider`, optional `session_id`, optional `label`, optional `model`, optional `effort`, and `timestamp_ms`. Codex hooks read model/effort from hook stdin when present and fall back to the root `model` and `model_reasoning_effort` values in `~/.codex/config.toml`. The `agent-viewer daemon` subcommand aggregates by provider, canonical worktree path, and session id when available, then derives an 8-character instance id for BLE updates.
 
 On Linux, the hook also walks its `/proc` parent chain to find the owning `claude` or `codex` process. It sends `pid` plus the process start time to the daemon, and the daemon prunes those agents every 10 seconds when that exact process exits. The start time check prevents deleting the wrong agent if Linux reuses a PID.
 
@@ -122,7 +126,7 @@ On Linux, the hook also walks its `/proc` parent chain to find the owning `claud
 | **Stats** | `00000000-0000-a359-42f0-4467de900003` | Host -> ESP32 | UTF-8 string <=24 chars | Token/cost HUD |
 | **Action** | `00000000-0000-a359-42f0-4467de900004` | ESP32 -> Host | 1 byte: 1=ACK | Touch acknowledgment |
 | **Name** | `00000000-0000-a359-42f0-4467de900005` | Host -> ESP32 | UTF-8 string <=32 chars | Paired host display name |
-| **Multi** | `00000000-0000-a359-42f0-4467de900006` | Host -> ESP32 | `U\tid\tstate\tlabel\tstatus\tprovider\tbranch` or `D\tid` | Multi-agent updates |
+| **Multi** | `00000000-0000-a359-42f0-4467de900006` | Host -> ESP32 | `U\tid\tstate\tlabel\tstatus\tprovider\tbranch\tmetrics\tmodel\teffort` or `D\tid` | Multi-agent updates |
 
 ## Display Constraints
 
@@ -152,6 +156,7 @@ The screen is a **466x466 circular AMOLED**. The corners of the square coordinat
 - Use `LV_ALIGN_TOP_MID` or center-based positioning with offsets no larger than about +/-100 for top/bottom content.
 - Keep a 30-50px safe margin from the screen edge at top and bottom.
 - Center content vertically; the circular shape clips the top and bottom roughly 33px.
+- On the main Agent Viewer screen, avoid 14px text for live agent metadata; branch, model/effort, and status should stay at 20px or larger with bright grey/colored text.
 
 ## Status Ring Scroll UX
 

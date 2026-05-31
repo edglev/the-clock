@@ -5,3 +5,5 @@
 ```bash
 source "$HOME/.espressif/tools/activate_idf_v6.0.1.sh" >/tmp/idf-activate.log && idf.py build
 ```
+
+- This project is for one user, one ESP32-S3 device, and one host machine. Do not preserve backwards compatibility with older firmware, daemon builds, payload shapes, or host configurations unless explicitly requested.
