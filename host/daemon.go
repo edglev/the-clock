@@ -85,6 +85,7 @@ var (
 	connected      bool
 	multiSupported bool
 	connMu         sync.RWMutex
+	gattMu         sync.Mutex
 
 	instancesMu sync.Mutex
 	instances   = map[string]*agentInstance{}
@@ -92,15 +93,16 @@ var (
 )
 
 type hookEvent struct {
-	Event       string `json:"event"`
-	CWD         string `json:"cwd"`
-	SessionID   string `json:"session_id,omitempty"`
-	Label       string `json:"label,omitempty"`
-	Provider    string `json:"provider,omitempty"`
-	Model       string `json:"model,omitempty"`
-	ToolName    string `json:"tool_name,omitempty"`
-	TurnID      string `json:"turn_id,omitempty"`
-	TimestampMS int64  `json:"timestamp_ms"`
+	Event       string     `json:"event"`
+	CWD         string     `json:"cwd"`
+	SessionID   string     `json:"session_id,omitempty"`
+	Label       string     `json:"label,omitempty"`
+	Provider    string     `json:"provider,omitempty"`
+	Model       string     `json:"model,omitempty"`
+	ToolName    string     `json:"tool_name,omitempty"`
+	TurnID      string     `json:"turn_id,omitempty"`
+	Process     processRef `json:"process,omitempty"`
+	TimestampMS int64      `json:"timestamp_ms"`
 }
 
 type agentInstance struct {
@@ -116,6 +118,7 @@ type agentInstance struct {
 	State     byte
 	Updated   time.Time
 	EndedAt   time.Time
+	Process   processRef
 }
 
 type claudeStats struct {
@@ -267,6 +270,38 @@ func markDisconnected(err error) {
 	}
 }
 
+func writeCharacteristic(ch bluetooth.DeviceCharacteristic, data []byte) error {
+	gattMu.Lock()
+	defer gattMu.Unlock()
+
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, err = ch.WriteWithoutResponse(data); !isGattInProgress(err) {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return err
+}
+
+func readCharacteristic(ch bluetooth.DeviceCharacteristic, data []byte) error {
+	gattMu.Lock()
+	defer gattMu.Unlock()
+
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, err = ch.Read(data); !isGattInProgress(err) {
+			return err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return err
+}
+
+func isGattInProgress(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "in progress")
+}
+
 func sendState(v byte) {
 	connMu.RLock()
 	ok := connected
@@ -276,7 +311,7 @@ func sendState(v byte) {
 		return
 	}
 	fmt.Printf("[ble] state %d\n", v)
-	if _, err := ch.WriteWithoutResponse([]byte{v}); err != nil {
+	if err := writeCharacteristic(ch, []byte{v}); err != nil {
 		markDisconnected(err)
 	}
 }
@@ -291,7 +326,7 @@ func sendStats(text string) {
 	}
 	text = sanitizeField(text, maxStatusLen)
 	fmt.Printf("[ble] stats: %s\n", text)
-	if _, err := ch.WriteWithoutResponse([]byte(text)); err != nil {
+	if err := writeCharacteristic(ch, []byte(text)); err != nil {
 		markDisconnected(err)
 	}
 }
@@ -305,7 +340,7 @@ func sendMultiPayload(payload string) bool {
 		return false
 	}
 	fmt.Printf("[ble] multi: %s\n", payload)
-	if _, err := ch.WriteWithoutResponse([]byte(payload)); err != nil {
+	if err := writeCharacteristic(ch, []byte(payload)); err != nil {
 		markDisconnected(err)
 		return false
 	}
@@ -455,7 +490,11 @@ func connectLoop() {
 		if err == nil && len(chars) > 0 {
 			nc = chars[0]
 			hostname, _ := os.Hostname()
-			nc.WriteWithoutResponse([]byte(hostname))
+			if err := writeCharacteristic(nc, []byte(hostname)); err != nil {
+				fmt.Printf("[ble] send hostname failed: %v\n", err)
+				dev.Disconnect()
+				continue
+			}
 			fmt.Printf("[ble] sent hostname: %s\n", hostname)
 		}
 
@@ -522,7 +561,11 @@ func handleConn(conn net.Conn) {
 		return
 	}
 	provider := normalizeProvider(ev.Provider)
-	fmt.Printf("[unix] event: %s provider=%s cwd=%s\n", ev.Event, provider, ev.CWD)
+	processLabel := ""
+	if ev.Process.PID > 0 {
+		processLabel = fmt.Sprintf(" pid=%d", ev.Process.PID)
+	}
+	fmt.Printf("[unix] event: %s provider=%s cwd=%s%s\n", ev.Event, provider, ev.CWD, processLabel)
 
 	state, status, ok := eventStateAndStatus(provider, ev.Event)
 	if !ok {
@@ -551,6 +594,9 @@ func handleConn(conn net.Conn) {
 	inst.State = state
 	inst.Status = status
 	inst.Updated = updated
+	if ev.Process.PID > 0 && strings.TrimSpace(ev.Process.StartTime) != "" {
+		inst.Process = ev.Process
+	}
 	if ev.Event == "SessionEnd" {
 		inst.EndedAt = updated
 	} else {
@@ -643,38 +689,50 @@ func healthLoop() {
 		}
 
 		var buf [1]byte
-		if _, err := ch.Read(buf[:]); err != nil {
+		if err := readCharacteristic(ch, buf[:]); err != nil {
 			markDisconnected(fmt.Errorf("health check failed: %w", err))
 		}
 	}
 }
 
 func pruneLoop() {
-	for range time.NewTicker(1 * time.Minute).C {
-		now := time.Now()
-		var deleted []string
+	for range time.NewTicker(10 * time.Second).C {
+		deleted := pruneInstances(time.Now())
+		sendDeletedInstances(deleted)
+	}
+}
 
-		instancesMu.Lock()
-		for id, inst := range instances {
-			expiredEnded := !inst.EndedAt.IsZero() && now.Sub(inst.EndedAt) > 30*time.Minute
-			expiredStale := now.Sub(inst.Updated) > 2*time.Hour
-			if expiredEnded || expiredStale {
-				deleted = append(deleted, id)
-				delete(instances, id)
+func pruneInstances(now time.Time) []string {
+	var deleted []string
+
+	instancesMu.Lock()
+	for id, inst := range instances {
+		processExited := inst.Process.PID > 0 && !processAlive(inst.Process)
+		expiredEnded := !inst.EndedAt.IsZero() && now.Sub(inst.EndedAt) > 30*time.Minute
+		expiredStale := now.Sub(inst.Updated) > 2*time.Hour
+		if processExited || expiredEnded || expiredStale {
+			deleted = append(deleted, id)
+			delete(instances, id)
+			if processExited {
+				fmt.Printf("[daemon] removed %s: process %d exited\n", inst.Label, inst.Process.PID)
 			}
 		}
-		if len(deleted) > 0 && instances[focusedID] == nil {
-			focusedID = newestInstanceIDLocked()
-		}
-		deriveLabelsLocked()
-		instancesMu.Unlock()
+	}
+	if len(deleted) > 0 && instances[focusedID] == nil {
+		focusedID = newestInstanceIDLocked()
+	}
+	deriveLabelsLocked()
+	instancesMu.Unlock()
 
-		for _, id := range deleted {
-			sendDelete(id)
-		}
-		if len(deleted) > 0 {
-			sendSnapshot()
-		}
+	return deleted
+}
+
+func sendDeletedInstances(deleted []string) {
+	for _, id := range deleted {
+		sendDelete(id)
+	}
+	if len(deleted) > 0 {
+		sendSnapshot()
 	}
 }
 

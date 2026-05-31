@@ -112,6 +112,8 @@ Codex token stats are read from `~/.codex/state_5.sqlite` when available. If the
 
 The `agent-viewer hook` subcommand sends JSON to `/tmp/agent-viewer.sock` with `event`, `cwd`, `provider`, optional `session_id`, optional `label`, optional `model`, and `timestamp_ms`. The `agent-viewer daemon` subcommand aggregates by provider, canonical worktree path, and session id when available, then derives an 8-character instance id for BLE updates.
 
+On Linux, the hook also walks its `/proc` parent chain to find the owning `claude` or `codex` process. It sends `pid` plus the process start time to the daemon, and the daemon prunes those agents every 10 seconds when that exact process exits. The start time check prevents deleting the wrong agent if Linux reuses a PID.
+
 ## BLE GATT Protocol
 
 | Characteristic | UUID | Direction | Payload | Purpose |

@@ -52,6 +52,7 @@ func runHook(args []string) error {
 		return fmt.Errorf("hook: --event is required")
 	}
 
+	process := discoverAgentProcess(*provider)
 	payload := hookEvent{
 		Event:       *event,
 		CWD:         *cwd,
@@ -61,6 +62,7 @@ func runHook(args []string) error {
 		Model:       strings.TrimSpace(*model),
 		ToolName:    stringField(stdinFields, "tool_name"),
 		TurnID:      stringField(stdinFields, "turn_id"),
+		Process:     process,
 		TimestampMS: time.Now().UnixMilli(),
 	}
 
