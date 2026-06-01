@@ -22,6 +22,7 @@ static const char *TAG = "agent_viewer";
 #define DIAL_CX   (DIAL_SIZE / 2)
 #define DIAL_CY   (DIAL_SIZE / 2)
 #define NAV_HINT_EDGE_OFFSET 24
+#define WAITING_BLINK_MS 30000u
 
 static lv_obj_t *canvas;
 static lv_draw_buf_t *draw_buf;
@@ -58,6 +59,14 @@ static agent_instance_info_t focused_timer;
 static uint32_t now_ms(void)
 {
     return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+static bool waiting_blink_active(const agent_instance_info_t *inst)
+{
+    if (!inst || inst->state != AGENT_STATE_WAITING || inst->priority_entered_ms == 0) {
+        return false;
+    }
+    return (uint32_t)(now_ms() - inst->priority_entered_ms) < WAITING_BLINK_MS;
 }
 
 static const char *agent_state_label(uint8_t state)
@@ -233,7 +242,8 @@ static void update_canvas(void)
         break;
     }
     case AGENT_STATE_WAITING: {
-        lv_color_t c = (rot_angle / 30 % 2 == 0) ? lv_color_hex(0xFFAA00) : lv_color_hex(0xFF0000);
+        bool blink = waiting_blink_active(&focused_canvas);
+        lv_color_t c = (blink && (rot_angle / 30 % 2 != 0)) ? lv_color_hex(0xFF0000) : lv_color_hex(0xFFAA00);
         draw_triangle(&layer, cx, cy - 14, cx - 14, cy + 12, cx + 14, cy + 12, c);
         break;
     }
@@ -526,7 +536,10 @@ static void timer_cb(lv_timer_t *t)
         switch (focused_timer.state) {
         case AGENT_STATE_IDLE:    ring_color = lv_color_hex(COLOR_CYAN); break;
         case AGENT_STATE_THINKING: ring_color = lv_color_hex(0x9933FF); break;
-        case AGENT_STATE_WAITING:  ring_color = (rot_angle / 15 % 2 == 0) ? lv_color_hex(0xFFAA00) : lv_color_hex(0xFF0000); break;
+        case AGENT_STATE_WAITING:
+            ring_color = (waiting_blink_active(&focused_timer) && (rot_angle / 15 % 2 != 0)) ?
+                         lv_color_hex(0xFF0000) : lv_color_hex(0xFFAA00);
+            break;
         case AGENT_STATE_SUCCESS:  ring_color = lv_color_hex(0x00FF00); break;
         default:                   ring_color = lv_color_hex(COLOR_CYAN); break;
         }
