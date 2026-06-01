@@ -47,6 +47,8 @@ static int s_focused_index = -1;
 
 static portMUX_TYPE s_printer_mux = portMUX_INITIALIZER_UNLOCKED;
 static agent_printer_status_t s_printer_status = {};
+static portMUX_TYPE s_ams_mux = portMUX_INITIALIZER_UNLOCKED;
+static agent_ams_status_t s_ams_status = {};
 
 typedef struct {
     uint8_t addr[6];
@@ -302,6 +304,43 @@ static void upsert_printer_status(char **fields, int field_count)
              next.state, next.progress_percent, next.job, next.source);
 }
 
+static void upsert_ams_status(char **fields, int field_count)
+{
+    if (!fields || field_count != 16) return;
+
+    agent_ams_status_t next = {};
+    next.active_slot = (int8_t)parse_int_field(fields[1], -1);
+    if (next.active_slot < 0 || next.active_slot >= AGENT_AMS_TRAY_COUNT) {
+        next.active_slot = -1;
+    }
+    copy_clean(next.humidity, sizeof(next.humidity), fields[2]);
+
+    for (int i = 0; i < AGENT_AMS_TRAY_COUNT; i++) {
+        int material_index = 3 + (i * 3);
+        int color_index = material_index + 1;
+        int remaining_index = material_index + 2;
+        copy_clean(next.trays[i].material, sizeof(next.trays[i].material), fields[material_index]);
+        copy_clean(next.trays[i].color, sizeof(next.trays[i].color), fields[color_index]);
+        next.trays[i].remaining_percent = (int8_t)parse_int_field(fields[remaining_index], -1);
+        if (next.trays[i].remaining_percent > 100) next.trays[i].remaining_percent = 100;
+        if (next.trays[i].remaining_percent < -1) next.trays[i].remaining_percent = -1;
+        next.trays[i].loaded = next.trays[i].material[0] || next.trays[i].color[0];
+    }
+    next.updated_ms = now_ms();
+    next.valid = true;
+
+    portENTER_CRITICAL(&s_ams_mux);
+    s_ams_status = next;
+    portEXIT_CRITICAL(&s_ams_mux);
+
+    ESP_LOGI(TAG, "AMS update: active=%d humidity=%s tray1=%s tray2=%s tray3=%s tray4=%s",
+             next.active_slot, next.humidity,
+             next.trays[0].material,
+             next.trays[1].material,
+             next.trays[2].material,
+             next.trays[3].material);
+}
+
 static void handle_multi_write(const uint8_t *data, int data_len)
 {
     char payload[300];
@@ -309,8 +348,8 @@ static void handle_multi_write(const uint8_t *data, int data_len)
     memcpy(payload, data, len);
     payload[len] = '\0';
 
-    char *fields[13] = {};
-    int field_count = split_tab_fields(payload, fields, 13);
+    char *fields[16] = {};
+    int field_count = split_tab_fields(payload, fields, 16);
     if (field_count <= 0 || !fields[0]) return;
 
     if (fields[0][0] == 'D') {
@@ -322,6 +361,11 @@ static void handle_multi_write(const uint8_t *data, int data_len)
 
     if (fields[0][0] == 'P') {
         upsert_printer_status(fields, field_count);
+        return;
+    }
+
+    if (fields[0][0] == 'A') {
+        upsert_ams_status(fields, field_count);
         return;
     }
 
@@ -886,6 +930,18 @@ bool agent_ble_get_printer_status(agent_printer_status_t *out)
     *out = s_printer_status;
     valid = s_printer_status.valid;
     portEXIT_CRITICAL(&s_printer_mux);
+    return valid;
+}
+
+bool agent_ble_get_ams_status(agent_ams_status_t *out)
+{
+    if (!out) return false;
+
+    bool valid;
+    portENTER_CRITICAL(&s_ams_mux);
+    *out = s_ams_status;
+    valid = s_ams_status.valid;
+    portEXIT_CRITICAL(&s_ams_mux);
     return valid;
 }
 

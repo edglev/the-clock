@@ -80,7 +80,7 @@ Configure Bambu Cloud printer status before running the daemon:
 ./host/agent-viewer bambu-login
 ```
 
-The login stores Bambu Cloud token, user id, and selected printer serial in `~/.config/agent-viewer/bambu.json` with `0600` permissions. The daemon reads that file, connects to Bambu Cloud MQTT, and forwards compact display-only printer status to the ESP32 when Bambu MQTT events arrive, on BLE reconnect, and on stale/offline transitions. The 30 second Bambu ticker requests a fresh `pushall` snapshot and checks for stale cloud data; it does not blindly re-send cached status to BLE. For UI testing without Bambu Cloud, run the daemon with `AGENT_VIEWER_BAMBU_SIM=1`.
+The login stores Bambu Cloud token, user id, and selected printer serial in `~/.config/agent-viewer/bambu.json` with `0600` permissions. The daemon reads that file, connects to Bambu Cloud MQTT, and forwards compact display-only printer and AMS status to the ESP32 when Bambu MQTT events arrive, on BLE reconnect, and on stale/offline transitions. The 30 second Bambu ticker requests a fresh `pushall` snapshot and checks for stale cloud data; it does not blindly re-send cached status to BLE. For UI testing without Bambu Cloud, run the daemon with `AGENT_VIEWER_BAMBU_SIM=1`.
 
 ## Hook Setup
 
@@ -126,7 +126,7 @@ The `agent-viewer hook` subcommand sends JSON to `/tmp/agent-viewer.sock` with `
 
 On Linux, the hook also walks its `/proc` parent chain to find the owning `claude` or `codex` process. It sends `pid` plus the process start time to the daemon, and the daemon prunes those agents every 10 seconds when that exact process exits. The start time check prevents deleting the wrong agent if Linux reuses a PID.
 
-Printer status is cloud-first for the P2S so the printer can stay in normal Bambu Cloud/Bambu Handy mode. Local MQTT and ESP32 Wi-Fi are future options, but the firmware only consumes the normalized BLE printer payload and does not care whether that payload came from cloud, LAN MQTT, or a simulator. The printer page UI lives in `components/agent_printer`; `components/agent_viewer` only owns the tile shell, navigation, and agent screens.
+Printer and AMS status are cloud-first for the P2S so the printer can stay in normal Bambu Cloud/Bambu Handy mode. Local MQTT and ESP32 Wi-Fi are future options, but the firmware only consumes normalized BLE payloads and does not care whether those payloads came from cloud, LAN MQTT, or a simulator. The printer page UI lives in `components/agent_printer`, the AMS page UI lives in `components/agent_ams`, and `components/agent_viewer` only owns the tile shell, navigation, and agent screens.
 
 ## BLE GATT Protocol
 
@@ -136,9 +136,9 @@ Printer status is cloud-first for the P2S so the printer can stay in normal Bamb
 | **Stats** | `00000000-0000-a359-42f0-4467de900003` | Host -> ESP32 | UTF-8 string <=24 chars | Token/cost HUD |
 | **Action** | `00000000-0000-a359-42f0-4467de900004` | ESP32 -> Host | 1 byte: 1=ACK | Touch acknowledgment |
 | **Name** | `00000000-0000-a359-42f0-4467de900005` | Host -> ESP32 | UTF-8 string <=32 chars | Paired host display name |
-| **Multi** | `00000000-0000-a359-42f0-4467de900006` | Host -> ESP32 | `U\tid\tstate\tlabel\tstatus\tprovider\tbranch\tmetrics\tmodel\teffort`, `D\tid`, or `P\tstate\tprogress\teta_s\tlayer\tlayers\tnozzle_c\tbed_c\tchamber_c\tjob\tmaterial\tsource\tupdated_ms` | Agent and printer updates |
+| **Multi** | `00000000-0000-a359-42f0-4467de900006` | Host -> ESP32 | `U\tid\tstate\tlabel\tstatus\tprovider\tbranch\tmetrics\tmodel\teffort`, `D\tid`, `P\tstate\tprogress\teta_s\tlayer\tlayers\tnozzle_c\tbed_c\tchamber_c\tjob\tmaterial\tsource\tupdated_ms`, or `A\tactive_slot\ttray1_material\ttray1_color\t...\ttray4_material\ttray4_color\tupdated_ms` | Agent, printer, and AMS updates |
 
-Printer states are `offline`, `idle`, `printing`, `paused`, `error`, and `unknown`. Empty printer fields are allowed and rendered as `--`; text fields are tab/newline sanitized and truncated on the host before BLE send. Firmware freshness text shows `just now` for the first minute and then advances in one-minute buckets.
+Printer states are `offline`, `idle`, `printing`, `paused`, `error`, and `unknown`. Empty printer/AMS fields are allowed and rendered as `--` or `Empty`; text fields are tab/newline sanitized and truncated on the host before BLE send. Firmware freshness text shows `just now` for the first minute and then advances in one-minute buckets.
 
 ## Display Constraints
 

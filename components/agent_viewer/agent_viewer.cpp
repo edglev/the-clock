@@ -9,6 +9,7 @@
 #include "agent_ble.hpp"
 #include "agent_pmic.hpp"
 #include "agent_printer.hpp"
+#include "agent_ams.hpp"
 #include "agent_ring.hpp"
 #include "agent_viewer.hpp"
 #include "agent_settings.hpp"
@@ -37,6 +38,7 @@ static lv_obj_t *tileview;
 static lv_obj_t *tile_agent;
 static lv_obj_t *tile_instances;
 static lv_obj_t *tile_printer;
+static lv_obj_t *tile_ams;
 static lv_obj_t *tile_settings;
 static lv_obj_t *instances_list;
 
@@ -541,6 +543,7 @@ static void timer_cb(lv_timer_t *t)
             update_instances_page();
         }
         agent_printer_timer_update();
+        agent_ams_timer_update();
         agent_settings_timer_update();
     }
 }
@@ -577,6 +580,9 @@ static void create_page_indicators(void)
 
     create_nav_hint(tile_printer, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
     create_nav_hint(tile_printer, LV_SYMBOL_RIGHT, LV_ALIGN_RIGHT_MID, -NAV_HINT_EDGE_OFFSET, 0);
+    create_nav_hint(tile_printer, LV_SYMBOL_DOWN, LV_ALIGN_BOTTOM_MID, 0, -NAV_HINT_EDGE_OFFSET);
+
+    create_nav_hint(tile_ams, LV_SYMBOL_UP, LV_ALIGN_TOP_MID, 0, NAV_HINT_EDGE_OFFSET);
 }
 
 static void create_status_ring(lv_obj_t *parent)
@@ -734,10 +740,15 @@ void agent_viewer_init(void)
     lv_obj_set_style_border_width(tile_instances, 0, 0);
     create_page_instances(tile_instances);
 
-    tile_printer = lv_tileview_add_tile(tileview, 1, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
+    tile_printer = lv_tileview_add_tile(tileview, 1, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT | LV_DIR_BOTTOM));
     lv_obj_set_style_bg_opa(tile_printer, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(tile_printer, 0, 0);
     agent_printer_create(tile_printer);
+
+    tile_ams = lv_tileview_add_tile(tileview, 1, 1, LV_DIR_TOP);
+    lv_obj_set_style_bg_opa(tile_ams, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tile_ams, 0, 0);
+    agent_ams_create(tile_ams);
 
     tile_settings = lv_tileview_add_tile(tileview, 2, 0, LV_DIR_LEFT);
     lv_obj_set_style_bg_opa(tile_settings, LV_OPA_TRANSP, 0);
@@ -758,6 +769,7 @@ void agent_viewer_init(void)
     update_header();
     update_instances_page();
     agent_printer_timer_update();
+    agent_ams_timer_update();
 
     bsp_display_unlock();
     ESP_LOGI(TAG, "UI ready");

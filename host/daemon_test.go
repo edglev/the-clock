@@ -149,6 +149,64 @@ func TestFormatPrinterPayloadSanitizesFields(t *testing.T) {
 	}
 }
 
+func TestFormatAMSPayload(t *testing.T) {
+	payload := formatAMSPayload(amsStatus{
+		ActiveSlot: 2,
+		Humidity:   "1",
+		Trays: [amsTrayCount]amsTrayStatus{
+			{Material: "PLA", Color: "22C55EFF", RemainingPercent: 98},
+			{Material: "PETG-CF", Color: "111111", RemainingPercent: 64},
+			{Material: "ABS", Color: "F97316", RemainingPercent: -1},
+			{Material: "", Color: "", RemainingPercent: -1},
+		},
+		Updated: time.UnixMilli(1234567890),
+	})
+
+	fields := strings.Split(payload, "\t")
+	if len(fields) != 16 {
+		t.Fatalf("payload field count = %d: %q", len(fields), payload)
+	}
+	if fields[0] != "A" || fields[1] != "2" || fields[2] != "1" || fields[3] != "PLA" || fields[4] != "22C55EFF" || fields[5] != "98" {
+		t.Fatalf("unexpected AMS payload prefix: %q", payload)
+	}
+	if fields[15] != "1234567890" {
+		t.Fatalf("updated field = %q", fields[15])
+	}
+}
+
+func TestAMSStatusFromBambuPrint(t *testing.T) {
+	status, ok := amsStatusFromBambuPrint(map[string]any{
+		"ams": map[string]any{
+			"tray_now": float64(1),
+			"humidity": float64(2),
+			"ams": []any{
+				map[string]any{
+					"id": float64(0),
+					"tray": []any{
+						map[string]any{"id": float64(0), "tray_type": "PLA", "tray_color": "22c55eff", "remain": float64(88)},
+						map[string]any{"id": float64(1), "tray_type": "PETG", "tray_color": "#38BDF8", "remaining_percent": float64(64)},
+					},
+				},
+			},
+		},
+	})
+	if !ok {
+		t.Fatal("AMS status was not parsed")
+	}
+	if status.ActiveSlot != 1 {
+		t.Fatalf("active slot = %d", status.ActiveSlot)
+	}
+	if status.Humidity != "2" {
+		t.Fatalf("humidity = %q", status.Humidity)
+	}
+	if status.Trays[0].Material != "PLA" || status.Trays[0].Color != "22C55EFF" || status.Trays[0].RemainingPercent != 88 {
+		t.Fatalf("tray 0 = %+v", status.Trays[0])
+	}
+	if status.Trays[1].Material != "PETG" || status.Trays[1].Color != "38BDF8" || status.Trays[1].RemainingPercent != 64 {
+		t.Fatalf("tray 1 = %+v", status.Trays[1])
+	}
+}
+
 func TestPrinterReconnectDelayBackoff(t *testing.T) {
 	delay := nextPrinterReconnectDelay(0)
 	if delay != printerReconnectMin {

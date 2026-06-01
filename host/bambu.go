@@ -29,6 +29,11 @@ const (
 	maxPrinterMaterialLen = 24
 	maxPrinterTempLen     = 8
 	maxPrinterSourceLen   = 16
+	amsTrayCount          = 4
+	maxAMSMaterialLen     = 12
+	maxAMSColorLen        = 8
+	maxAMSHumidityLen     = 8
+	maxAMSRemainingLen    = 4
 	printerSendInterval   = 30 * time.Second
 	printerStaleAfter     = 2 * time.Minute
 	printerReconnectMin   = 30 * time.Second
@@ -49,6 +54,19 @@ type printerStatus struct {
 	Material        string
 	Source          string
 	Updated         time.Time
+}
+
+type amsTrayStatus struct {
+	Material         string
+	Color            string
+	RemainingPercent int
+}
+
+type amsStatus struct {
+	ActiveSlot int
+	Humidity   string
+	Trays      [amsTrayCount]amsTrayStatus
+	Updated    time.Time
 }
 
 type bambuConfig struct {
@@ -86,6 +104,8 @@ var (
 		Job:             "Run bambu-login",
 		Source:          "Cloud",
 	}
+	currentAMS      = amsStatus{ActiveSlot: -1}
+	currentAMSValid = false
 )
 
 func runBambuLogin(args []string) error {
@@ -473,10 +493,14 @@ func runBambuCloudMonitor() error {
 		clearStaleBambuErrorFields(printData, print)
 		status := printerStatusFromBambuPrint(printData)
 		status.Source = "Cloud"
+		ams, hasAMS := amsStatusFromBambuPrint(printData)
 		lastUpdate = time.Now()
 		staleReported = false
 		printMu.Unlock()
 		sendPrinterStatus(status)
+		if hasAMS {
+			sendAMSStatusIfChanged(ams)
+		}
 	})
 	options.SetOnConnectHandler(func(client mqtt.Client) {
 		if token := client.Subscribe(reportTopic, 0, nil); token.Wait() && token.Error() != nil {
@@ -541,9 +565,21 @@ func simulatePrinterLoop() {
 		{State: "paused", ProgressPercent: 64, EtaSeconds: 2460, Layer: 77, Layers: 120, NozzleC: "195", BedC: "55", ChamberC: "34", Job: "clock-bezel.3mf", Material: "PLA", Source: "Sim"},
 		{State: "error", ProgressPercent: 64, EtaSeconds: -1, Layer: 77, Layers: 120, NozzleC: "180", BedC: "50", ChamberC: "32", Job: "AMS filament check", Material: "PLA", Source: "Sim"},
 	}
+	ams := amsStatus{
+		ActiveSlot: 0,
+		Humidity:   "2",
+		Trays: [amsTrayCount]amsTrayStatus{
+			{Material: "PLA", Color: "22C55E", RemainingPercent: 96},
+			{Material: "PETG", Color: "38BDF8", RemainingPercent: 64},
+			{Material: "ABS", Color: "F97316", RemainingPercent: 28},
+			{Material: "", Color: "", RemainingPercent: -1},
+		},
+	}
 	i := 0
 	for {
 		sendPrinterStatus(samples[i%len(samples)])
+		ams.ActiveSlot = i % amsTrayCount
+		sendAMSStatus(ams)
 		i++
 		time.Sleep(printerSendInterval)
 	}
@@ -609,6 +645,64 @@ func sendCurrentPrinterStatus() {
 	sendMultiPayload(formatPrinterPayload(status))
 }
 
+func sendAMSStatus(status amsStatus) {
+	normalizeAMSStatus(&status)
+
+	printerMu.Lock()
+	currentAMS = status
+	currentAMSValid = true
+	printerMu.Unlock()
+
+	sendMultiPayload(formatAMSPayload(status))
+}
+
+func sendAMSStatusIfChanged(status amsStatus) bool {
+	normalizeAMSStatus(&status)
+
+	printerMu.Lock()
+	if currentAMSValid && sameAMSStatusView(currentAMS, status) {
+		printerMu.Unlock()
+		return false
+	}
+	currentAMS = status
+	currentAMSValid = true
+	printerMu.Unlock()
+
+	return sendMultiPayload(formatAMSPayload(status))
+}
+
+func sendCurrentAMSStatus() {
+	printerMu.Lock()
+	status := currentAMS
+	valid := currentAMSValid
+	printerMu.Unlock()
+	if !valid || status.Updated.IsZero() {
+		return
+	}
+	sendMultiPayload(formatAMSPayload(status))
+}
+
+func normalizeAMSStatus(status *amsStatus) {
+	if status.Updated.IsZero() {
+		status.Updated = time.Now()
+	}
+	if status.ActiveSlot < 0 || status.ActiveSlot >= amsTrayCount {
+		status.ActiveSlot = -1
+	}
+}
+
+func sameAMSStatusView(a, b amsStatus) bool {
+	if a.ActiveSlot != b.ActiveSlot || a.Humidity != b.Humidity {
+		return false
+	}
+	for i := 0; i < amsTrayCount; i++ {
+		if a.Trays[i] != b.Trays[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func formatPrinterPayload(status printerStatus) string {
 	fields := []string{
 		"P",
@@ -628,11 +722,168 @@ func formatPrinterPayload(status printerStatus) string {
 	return strings.Join(fields, "\t")
 }
 
+func formatAMSPayload(status amsStatus) string {
+	fields := []string{
+		"A",
+		formatOptionalInt(status.ActiveSlot),
+		cleanField(status.Humidity, maxAMSHumidityLen),
+	}
+	for i := 0; i < amsTrayCount; i++ {
+		fields = append(fields,
+			cleanField(status.Trays[i].Material, maxAMSMaterialLen),
+			cleanField(status.Trays[i].Color, maxAMSColorLen),
+			formatOptionalInt(status.Trays[i].RemainingPercent),
+		)
+	}
+	fields = append(fields, strconv.FormatInt(status.Updated.UnixMilli(), 10))
+	return strings.Join(fields, "\t")
+}
+
 func formatOptionalInt(value int) string {
 	if value < 0 {
 		return ""
 	}
 	return strconv.Itoa(value)
+}
+
+func amsStatusFromBambuPrint(print map[string]any) (amsStatus, bool) {
+	status := amsStatus{ActiveSlot: -1}
+
+	if ams, ok := mapFromAny(print["ams"]); ok {
+		status.Humidity = firstNonEmpty(
+			stringFromMap(ams, "humidity"),
+			stringFromMap(ams, "humidity_raw"),
+			stringFromMap(ams, "humidity_level"),
+			stringFromMap(ams, "humidity_percent"),
+			stringFromMap(ams, "ams_humidity"),
+			stringFromMap(ams, "ams_humidity_percent"),
+		)
+
+		trayNow := intFromMap(ams, "tray_now", -1)
+		if trayNow >= 0 && trayNow < amsTrayCount {
+			status.ActiveSlot = trayNow
+		} else if trayNow >= 0 && trayNow < 255 && trayNow/amsTrayCount == 0 {
+			status.ActiveSlot = trayNow % amsTrayCount
+		}
+
+		if fillAMSFromUnits(&status, ams) {
+			return status, true
+		}
+	}
+
+	if fillAMSFromVirSlot(&status, print) {
+		return status, true
+	}
+
+	return status, false
+}
+
+func fillAMSFromUnits(status *amsStatus, ams map[string]any) bool {
+	units, ok := ams["ams"].([]any)
+	if !ok {
+		return false
+	}
+
+	var selected map[string]any
+	for _, item := range units {
+		unit, ok := mapFromAny(item)
+		if !ok {
+			continue
+		}
+		if selected == nil {
+			selected = unit
+		}
+		if intFromMap(unit, "id", 0) == 0 {
+			selected = unit
+			break
+		}
+	}
+	if selected == nil {
+		return false
+	}
+
+	trays, ok := selected["tray"].([]any)
+	if !ok {
+		return false
+	}
+	found := false
+	for _, trayItem := range trays {
+		tray, ok := mapFromAny(trayItem)
+		if !ok {
+			continue
+		}
+		slot := intFromMap(tray, "id", -1)
+		if slot < 0 || slot >= amsTrayCount {
+			continue
+		}
+		status.Trays[slot] = amsTrayStatus{
+			Material: firstNonEmpty(
+				stringFromMap(tray, "tray_type"),
+				stringFromMap(tray, "tray_sub_brands"),
+			),
+			Color:            normalizeAMSColor(stringFromMap(tray, "tray_color")),
+			RemainingPercent: remainingPercentFromMap(tray),
+		}
+		found = true
+	}
+	return found
+}
+
+func fillAMSFromVirSlot(status *amsStatus, print map[string]any) bool {
+	slots, ok := print["vir_slot"].([]any)
+	if !ok {
+		return false
+	}
+	found := false
+	for _, item := range slots {
+		slotMap, ok := mapFromAny(item)
+		if !ok {
+			continue
+		}
+		slot := intFromMap(slotMap, "id", -1)
+		if slot < 0 || slot >= amsTrayCount {
+			continue
+		}
+		status.Trays[slot] = amsTrayStatus{
+			Material:         stringFromMap(slotMap, "tray_type"),
+			Color:            normalizeAMSColor(stringFromMap(slotMap, "tray_color")),
+			RemainingPercent: remainingPercentFromMap(slotMap),
+		}
+		found = true
+	}
+	return found
+}
+
+func remainingPercentFromMap(values map[string]any) int {
+	for _, key := range []string{
+		"remain",
+		"remaining",
+		"remaining_percent",
+		"remain_percent",
+		"tray_remain",
+		"tray_remaining",
+		"percent",
+		"filament_percent",
+	} {
+		value := intFromMap(values, key, -1)
+		if value >= 0 && value <= 100 {
+			return value
+		}
+	}
+	return -1
+}
+
+func normalizeAMSColor(color string) string {
+	color = strings.TrimSpace(strings.TrimPrefix(color, "#"))
+	if len(color) > maxAMSColorLen {
+		color = color[:maxAMSColorLen]
+	}
+	for _, r := range color {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return ""
+		}
+	}
+	return strings.ToUpper(color)
 }
 
 func printerStatusFromBambuPrint(print map[string]any) printerStatus {

@@ -503,6 +503,7 @@ func connectLoop() {
 		fmt.Println("[ble] connected")
 		sendSnapshot()
 		sendCurrentPrinterStatus()
+		sendCurrentAMSStatus()
 	}
 }
 
