@@ -667,7 +667,7 @@ static void create_page_agent(lv_obj_t *tile)
     lv_obj_set_style_text_align(label_model_effort, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_model_effort, lv_color_hex(0xE0E0E0), 0);
     lv_obj_set_style_text_font(label_model_effort, &lv_font_montserrat_20, 0);
-    lv_obj_align(label_model_effort, LV_ALIGN_TOP_MID, 0, 142);
+    lv_obj_align(label_model_effort, LV_ALIGN_TOP_MID, 0, 272);
 
     label_stats = lv_label_create(tile);
     lv_label_set_text(label_stats, "Waiting for connection");
@@ -676,7 +676,7 @@ static void create_page_agent(lv_obj_t *tile)
     lv_obj_set_style_text_align(label_stats, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_stats, lv_color_hex(0xB0B0B0), 0);
     lv_obj_set_style_text_font(label_stats, &lv_font_montserrat_20, 0);
-    lv_obj_align(label_stats, LV_ALIGN_TOP_MID, 0, 170);
+    lv_obj_align(label_stats, LV_ALIGN_TOP_MID, 0, 300);
 
     lv_obj_t *batt_row = lv_obj_create(tile);
     lv_obj_remove_style_all(batt_row);
