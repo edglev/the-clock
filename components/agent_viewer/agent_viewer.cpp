@@ -1,6 +1,5 @@
 #include <string.h>
 #include <inttypes.h>
-#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -17,10 +16,7 @@
 static const char *TAG = "agent_viewer";
 
 #define COLOR_CYAN      0x009999
-#define COLOR_CYAN_DIM  0x004D4D
 #define DIAL_SIZE 206
-#define DIAL_CX   (DIAL_SIZE / 2)
-#define DIAL_CY   (DIAL_SIZE / 2)
 #define NAV_HINT_EDGE_OFFSET 24
 #define WAITING_BLINK_MS 30000u
 
@@ -30,6 +26,7 @@ static lv_obj_t *label_provider;
 static lv_obj_t *label_project;
 static lv_obj_t *label_branch;
 static lv_obj_t *label_model_effort;
+static lv_obj_t *label_center_status;
 static lv_obj_t *label_stats;
 static lv_obj_t *label_agent_count;
 static lv_obj_t *label_batt_icon;
@@ -43,15 +40,11 @@ static lv_obj_t *tile_ams;
 static lv_obj_t *tile_settings;
 static lv_obj_t *instances_list;
 
-static float pulse_val = 0.0f;
-static float pulse_dir = 0.02f;
 static int   rot_angle = 0;
-static int   success_countdown = 0;
 static uint32_t instances_signature = 0;
 static uint8_t instances_refresh_tick = 0;
 static agent_instance_info_t provider_summary_items[AGENT_MAX_INSTANCES];
 static agent_instance_info_t instances_page_items[AGENT_MAX_INSTANCES];
-static agent_instance_info_t focused_canvas;
 static agent_instance_info_t focused_header;
 static agent_instance_info_t focused_instances;
 static agent_instance_info_t focused_timer;
@@ -149,44 +142,6 @@ static void format_provider_summary(char *buf, size_t buf_size, const agent_inst
     }
 }
 
-static void draw_filled_circle(lv_layer_t *layer, int cx, int cy, int r, lv_color_t color)
-{
-    lv_draw_rect_dsc_t dsc;
-    lv_draw_rect_dsc_init(&dsc);
-    dsc.bg_color = color;
-    dsc.bg_opa = LV_OPA_COVER;
-    dsc.radius = lv_pct(50);
-    lv_area_t a = { cx - r, cy - r, cx + r, cy + r };
-    lv_draw_rect(layer, &dsc, &a);
-}
-
-static void draw_line(lv_layer_t *layer, int x1, int y1, int x2, int y2, lv_color_t color)
-{
-    lv_draw_line_dsc_t dsc;
-    lv_draw_line_dsc_init(&dsc);
-    dsc.color = color;
-    dsc.width = 2;
-    dsc.p1.x = x1 * 256;
-    dsc.p1.y = y1 * 256;
-    dsc.p2.x = x2 * 256;
-    dsc.p2.y = y2 * 256;
-    lv_draw_line(layer, &dsc);
-}
-
-static void draw_triangle(lv_layer_t *layer, int x1, int y1, int x2, int y2, int x3, int y3, lv_color_t color)
-{
-    lv_draw_rect_dsc_t dsc;
-    lv_draw_rect_dsc_init(&dsc);
-    dsc.bg_color = color;
-    dsc.bg_opa = LV_OPA_COVER;
-    int mx = LV_MIN(LV_MIN(x1, x2), x3);
-    int my = LV_MIN(LV_MIN(y1, y2), y3);
-    int Mx = LV_MAX(LV_MAX(x1, x2), x3);
-    int My = LV_MAX(LV_MAX(y1, y2), y3);
-    lv_area_t a = { mx, my, Mx, My };
-    lv_draw_rect(layer, &dsc, &a);
-}
-
 static void update_canvas(void)
 {
     if (draw_buf == NULL) return;
@@ -194,69 +149,6 @@ static void update_canvas(void)
     lv_layer_t layer;
     lv_canvas_init_layer(canvas, &layer);
     lv_canvas_fill_bg(canvas, lv_color_hex(0x000000), LV_OPA_COVER);
-
-    int cx = DIAL_CX, cy = DIAL_CY;
-    float rad;
-    int lx, ly;
-
-    lv_draw_arc_dsc_t arc_dsc;
-    lv_draw_arc_dsc_init(&arc_dsc);
-    arc_dsc.width = 2;
-
-    bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused_canvas);
-
-    if (!has_focus) {
-        arc_dsc.color = lv_color_hex(0x555555);
-        arc_dsc.radius = 30;
-        arc_dsc.center.x = cx; arc_dsc.center.y = cy;
-        arc_dsc.start_angle = 0; arc_dsc.end_angle = 3600;
-        lv_draw_arc(&layer, &arc_dsc);
-        draw_filled_circle(&layer, cx, cy, 5, lv_color_hex(0x888888));
-        lv_canvas_finish_layer(canvas, &layer);
-        lv_obj_invalidate(canvas);
-        return;
-    }
-
-    switch (focused_canvas.state) {
-    case AGENT_STATE_IDLE: {
-        arc_dsc.color = lv_color_hex(COLOR_CYAN_DIM);
-        arc_dsc.radius = 30;
-        arc_dsc.center.x = cx; arc_dsc.center.y = cy;
-        arc_dsc.start_angle = 0; arc_dsc.end_angle = 3600;
-        lv_draw_arc(&layer, &arc_dsc);
-        rad = (rot_angle / 2.0f) * ((float)M_PI / 180.0f);
-        lx = cx + (int)(25 * cos(rad));
-        ly = cy + (int)(25 * sin(rad));
-        draw_line(&layer, cx, cy, lx, ly, lv_color_hex(COLOR_CYAN));
-        int r = 4 + (int)(3 * pulse_val);
-        draw_filled_circle(&layer, cx, cy, r, lv_color_hex(COLOR_CYAN));
-        break;
-    }
-    case AGENT_STATE_THINKING: {
-        rad = (rot_angle * 1.5f) * ((float)M_PI / 180.0f);
-        lx = cx + (int)(25 * cos(rad));
-        ly = cy + (int)(25 * sin(rad));
-        draw_line(&layer, cx, cy, lx, ly, lv_color_hex(0x9933FF));
-        int r = 3 + (int)(5 * pulse_val);
-        draw_filled_circle(&layer, cx, cy, r, lv_color_hex(0x9933FF));
-        break;
-    }
-    case AGENT_STATE_WAITING: {
-        bool blink = waiting_blink_active(&focused_canvas);
-        lv_color_t c = (blink && (rot_angle / 30 % 2 != 0)) ? lv_color_hex(0xFF0000) : lv_color_hex(0xFFAA00);
-        draw_triangle(&layer, cx, cy - 14, cx - 14, cy + 12, cx + 14, cy + 12, c);
-        break;
-    }
-    case AGENT_STATE_SUCCESS: {
-        draw_filled_circle(&layer, cx, cy, 20, lv_color_hex(COLOR_CYAN_DIM));
-        draw_filled_circle(&layer, cx, cy, 15, lv_color_hex(0x00FF00));
-        draw_line(&layer, cx - 7, cy, cx - 2, cy + 5, lv_color_hex(0xFFFFFF));
-        draw_line(&layer, cx - 2, cy + 5, cx + 7, cy - 5, lv_color_hex(0xFFFFFF));
-        if (success_countdown == 0) success_countdown = 160;
-        break;
-    }
-    }
-
     lv_canvas_finish_layer(canvas, &layer);
     lv_obj_invalidate(canvas);
 }
@@ -297,6 +189,10 @@ static void update_header(void)
         if (label_project) lv_label_set_text(label_project, "");
         if (label_branch) lv_label_set_text(label_branch, "");
         if (label_model_effort) lv_label_set_text(label_model_effort, "");
+        if (label_center_status) {
+            lv_label_set_text(label_center_status, "Waiting");
+            lv_obj_set_style_text_color(label_center_status, lv_color_hex(0xB0B0B0), 0);
+        }
         lv_label_set_text(label_stats, "Waiting for connection");
         lv_obj_set_style_text_color(label_stats, lv_color_hex(0xB0B0B0), 0);
         if (label_agent_count) lv_label_set_text(label_agent_count, "");
@@ -322,6 +218,10 @@ static void update_header(void)
             lv_label_set_text(label_model_effort, model_effort);
             lv_obj_set_style_text_color(label_model_effort, lv_color_hex(0xE0E0E0), 0);
         }
+        if (label_center_status) {
+            lv_label_set_text(label_center_status, status);
+            lv_obj_set_style_text_color(label_center_status, agent_state_color(focused_header.state), 0);
+        }
         lv_label_set_text(label_stats, status);
         lv_obj_set_style_text_color(label_stats, agent_state_color(focused_header.state), 0);
 
@@ -340,6 +240,10 @@ static void update_header(void)
         if (label_project) lv_label_set_text(label_project, "");
         if (label_branch) lv_label_set_text(label_branch, "");
         if (label_model_effort) lv_label_set_text(label_model_effort, "");
+        if (label_center_status) {
+            lv_label_set_text(label_center_status, "Ready");
+            lv_obj_set_style_text_color(label_center_status, lv_color_hex(0xB0B0B0), 0);
+        }
         lv_label_set_text(label_stats, "Waiting for events");
         lv_obj_set_style_text_color(label_stats, lv_color_hex(0xB0B0B0), 0);
         if (label_agent_count) {
@@ -522,10 +426,7 @@ static void update_instances_page(void)
 
 static void timer_cb(lv_timer_t *t)
 {
-    pulse_val += pulse_dir;
-    if (pulse_val >= 1.0f || pulse_val <= 0.0f) pulse_dir = -pulse_dir;
     rot_angle = (rot_angle + 6) % 360;
-    if (success_countdown > 0) success_countdown--;
 
     bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused_timer);
 
@@ -622,6 +523,7 @@ static void create_page_agent(lv_obj_t *tile)
     canvas = lv_canvas_create(tile);
     lv_obj_set_size(canvas, DIAL_SIZE, DIAL_SIZE);
     lv_obj_center(canvas);
+    make_indicator_noninteractive(canvas);
     if (draw_buf && buf) {
         lv_canvas_set_draw_buf(canvas, draw_buf);
     }
@@ -659,6 +561,17 @@ static void create_page_agent(lv_obj_t *tile)
     lv_obj_set_style_text_color(label_branch, lv_color_hex(0xB0B0B0), 0);
     lv_obj_set_style_text_font(label_branch, &lv_font_montserrat_20, 0);
     lv_obj_align(label_branch, LV_ALIGN_TOP_MID, 0, 114);
+
+    label_center_status = lv_label_create(tile);
+    lv_label_set_text(label_center_status, "Waiting");
+    lv_label_set_long_mode(label_center_status, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_width(label_center_status, 320);
+    lv_obj_set_height(label_center_status, 48);
+    lv_obj_set_style_text_align(label_center_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label_center_status, lv_color_hex(0xB0B0B0), 0);
+    lv_obj_set_style_text_font(label_center_status, &lv_font_montserrat_28, 0);
+    lv_obj_center(label_center_status);
+    make_indicator_noninteractive(label_center_status);
 
     label_model_effort = lv_label_create(tile);
     lv_label_set_text(label_model_effort, "");

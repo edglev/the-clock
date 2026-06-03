@@ -593,6 +593,8 @@ func handleConn(conn net.Conn) {
 
 	if ev.Event == "Stop" {
 		go autoIdle(id, updated)
+	} else if provider == "Claude" && ev.Event == "Notification" {
+		go autoIdleAfterWaiting(id, updated)
 	}
 }
 
@@ -617,7 +619,15 @@ func parseEvent(data []byte) hookEvent {
 
 func autoIdle(id string, eventTime time.Time) {
 	time.Sleep(2 * time.Second)
+	autoIdleIfCurrent(id, eventTime, stateSuccess)
+}
 
+func autoIdleAfterWaiting(id string, eventTime time.Time) {
+	time.Sleep(30 * time.Second)
+	autoIdleIfCurrent(id, eventTime, stateWaiting)
+}
+
+func autoIdleIfCurrent(id string, eventTime time.Time, requiredState byte) {
 	instancesMu.Lock()
 	inst, ok := instances[id]
 	if !ok || focusedID != id || !inst.Updated.Equal(eventTime) {
@@ -625,7 +635,7 @@ func autoIdle(id string, eventTime time.Time) {
 		return
 	}
 	idleState, _, ok := eventStateAndStatus(inst.Provider, "SessionEnd")
-	if !ok || inst.State != stateSuccess {
+	if !ok || inst.State != requiredState {
 		instancesMu.Unlock()
 		return
 	}
@@ -636,7 +646,7 @@ func autoIdle(id string, eventTime time.Time) {
 
 	instancesMu.Lock()
 	inst, ok = instances[id]
-	if !ok || focusedID != id || !inst.Updated.Equal(eventTime) || inst.State != stateSuccess {
+	if !ok || focusedID != id || !inst.Updated.Equal(eventTime) || inst.State != requiredState {
 		instancesMu.Unlock()
 		return
 	}
