@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -377,7 +378,7 @@ func doBambuRequest(client *http.Client, request *http.Request) (map[string]any,
 
 func startPrinterStatusLoop() {
 	if envBool("AGENT_VIEWER_BAMBU_SIM") {
-		go simulatePrinterLoop()
+		go gatedSimulatePrinterLoop()
 		return
 	}
 	go bambuCloudLoop()
@@ -386,8 +387,13 @@ func startPrinterStatusLoop() {
 func bambuCloudLoop() {
 	retryDelay := printerReconnectMin
 	for {
+		waitForBLEConnection()
+		ctx, cancel := context.WithCancel(context.Background())
+		go cancelWhenBLEDisconnected(ctx, cancel)
 		started := time.Now()
-		if err := runBambuCloudMonitor(); err != nil {
+		err := runBambuCloudMonitor(ctx)
+		cancel()
+		if err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Printf("[bambu] %v\n", err)
 			if time.Since(started) >= printerStableRunReset {
 				retryDelay = printerReconnectMin
@@ -396,6 +402,38 @@ func bambuCloudLoop() {
 			fmt.Printf("[bambu] reconnecting in %s\n", retryDelay)
 			time.Sleep(retryDelay)
 			retryDelay = nextPrinterReconnectDelay(retryDelay)
+		} else {
+			retryDelay = printerReconnectMin
+			fmt.Println("[bambu] BLE disconnected; cloud monitor stopped")
+		}
+	}
+}
+
+func waitForBLEConnection() {
+	for {
+		connMu.RLock()
+		ok := connected
+		connMu.RUnlock()
+		if ok {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func cancelWhenBLEDisconnected(ctx context.Context, cancel context.CancelFunc) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		connMu.RLock()
+		ok := connected
+		connMu.RUnlock()
+		if !ok {
+			cancel()
+			return
 		}
 	}
 }
@@ -434,7 +472,7 @@ func offlinePrinterStatus(job string) printerStatus {
 	}
 }
 
-func runBambuCloudMonitor() error {
+func runBambuCloudMonitor(ctx context.Context) error {
 	cfg, err := loadBambuRuntimeConfig()
 	if err != nil {
 		return err
@@ -524,6 +562,8 @@ func runBambuCloudMonitor() error {
 
 	for {
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case err := <-done:
 			return fmt.Errorf("Bambu MQTT disconnected: %w", err)
 		case <-ticker.C:
@@ -554,6 +594,47 @@ func publishBambuPushAll(client mqtt.Client, topic string) {
 	data, _ := json.Marshal(payload)
 	if token := client.Publish(topic, 0, false, data); token.WaitTimeout(5*time.Second) && token.Error() != nil {
 		fmt.Printf("[bambu] pushall failed: %v\n", token.Error())
+	}
+}
+
+func gatedSimulatePrinterLoop() {
+	for {
+		waitForBLEConnection()
+		runSimulatePrinterUntilDisconnected()
+	}
+}
+
+func runSimulatePrinterUntilDisconnected() {
+	samples := []printerStatus{
+		{State: "idle", ProgressPercent: -1, EtaSeconds: -1, Layer: -1, Layers: -1, Job: "Ready", Material: "PLA", Source: "Sim"},
+		{State: "printing", ProgressPercent: 18, EtaSeconds: 6840, Layer: 12, Layers: 120, NozzleC: "220", BedC: "60", ChamberC: "35", Job: "clock-bezel.3mf", Material: "PLA", Source: "Sim"},
+		{State: "printing", ProgressPercent: 64, EtaSeconds: 2460, Layer: 77, Layers: 120, NozzleC: "219", BedC: "60", ChamberC: "36", Job: "clock-bezel.3mf", Material: "PLA", Source: "Sim"},
+		{State: "paused", ProgressPercent: 64, EtaSeconds: 2460, Layer: 77, Layers: 120, NozzleC: "195", BedC: "55", ChamberC: "34", Job: "AMS filament check", Material: "PLA", Source: "Sim"},
+		{State: "error", ProgressPercent: 64, EtaSeconds: -1, Layer: 77, Layers: 120, NozzleC: "180", BedC: "50", ChamberC: "32", Job: "AMS filament check", Material: "PLA", Source: "Sim"},
+	}
+	ams := amsStatus{
+		ActiveSlot: 0,
+		Humidity:   "2",
+		Trays: [amsTrayCount]amsTrayStatus{
+			{Material: "PLA", Color: "22C55E", RemainingPercent: 96},
+			{Material: "PETG", Color: "38BDF8", RemainingPercent: 64},
+			{Material: "ABS", Color: "F97316", RemainingPercent: 28},
+			{Material: "", Color: "", RemainingPercent: -1},
+		},
+	}
+	i := 0
+	for {
+		connMu.RLock()
+		ok := connected
+		connMu.RUnlock()
+		if !ok {
+			return
+		}
+		sendPrinterStatus(samples[i%len(samples)])
+		ams.ActiveSlot = i % amsTrayCount
+		sendAMSStatus(ams)
+		i++
+		time.Sleep(printerSendInterval)
 	}
 }
 

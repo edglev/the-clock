@@ -18,6 +18,7 @@ extern "C" {
 //   D\tid
 //   P\tstate\tprogress\teta_s\tlayer\tlayers\tnozzle_c\tbed_c\tchamber_c\tjob\tmaterial\tsource\tupdated_ms
 //   A\tactive_slot\thumidity\ttray1_material\ttray1_color\ttray1_remaining\t...\ttray4_material\ttray4_color\ttray4_remaining\tupdated_ms
+//   C\tseq\tcount\tbase64_config_chunk
 #define AGENT_SVC_UUID    0x01, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 #define AGENT_STATE_CHAR  0x02, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 #define AGENT_STATS_CHAR  0x03, 0x00, 0x90, 0xde, 0x67, 0x44, 0xf0, 0x42, 0x59, 0xa3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -96,6 +97,8 @@ typedef struct {
     bool valid;
 } agent_ams_status_t;
 
+typedef void (*agent_ble_config_handler_t)(const char *json);
+
 extern uint8_t g_ble_state;
 extern char    g_ble_stats_text[32];
 extern bool    g_ble_connected;
@@ -108,6 +111,9 @@ bool agent_ble_get_focused_instance(agent_instance_info_t *out);
 int  agent_ble_get_instance_count(void);
 bool agent_ble_get_printer_status(agent_printer_status_t *out);
 bool agent_ble_get_ams_status(agent_ams_status_t *out);
+void agent_ble_set_printer_status(const agent_printer_status_t *status);
+void agent_ble_set_ams_status(const agent_ams_status_t *status);
+void agent_ble_set_config_handler(agent_ble_config_handler_t handler);
 int  agent_ble_get_bond_count(void);
 bool agent_ble_get_bond(int index, uint8_t addr[6]);
 const char *agent_ble_get_bond_name(int index);

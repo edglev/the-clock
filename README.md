@@ -21,6 +21,7 @@ It displays AI coding agent state on a 1.75" circular AMOLED screen with animate
 - **Status ring** - color-coded ring around the screen edge
 - **Multi-instance dashboard** - one focused newest agent plus a scrollable roster
 - **Bambu P2S status** - display-only cloud printer state with a PrintSphere-inspired progress ring, ETA, layers, temps, material, and AMS tray view
+- **Bambu Wi-Fi fallback** - ESP32 can use provisioned Wi-Fi plus Bambu Cloud config when BLE drops, keeping printer cloud mode enabled
 - **Claude/Codex labels** - main and Agents screens identify the coding CLI for each session
 - **Touch interaction** - tap to acknowledge alerts
 - **Swipe navigation** - swipe down for Agents, right for Settings, and through to Printer status
@@ -49,7 +50,7 @@ agent-viewer hook -> /tmp/agent-viewer.sock -> agent-viewer daemon
 ESP32-S3 BLE GATT server -> LVGL UI
 ```
 
-The host daemon aggregates active Claude and Codex sessions, reads available usage stats, connects to Bambu Cloud MQTT when configured, and sends compact updates to the ESP32 over BLE. Printer and AMS updates are forwarded when Bambu MQTT reports arrive, cached printer/AMS status is sent on BLE reconnect, and the 30 second Bambu ticker only requests a fresh `pushall` snapshot and checks for stale cloud data.
+The host daemon aggregates active Claude and Codex sessions, reads available usage stats, connects to Bambu Cloud MQTT only while the ESP32 is connected over BLE, and sends compact updates to the ESP32 over BLE. Printer and AMS updates are forwarded when Bambu MQTT reports arrive, cached printer/AMS status is sent on BLE reconnect, and the 30 second Bambu ticker only requests a fresh `pushall` snapshot and checks for stale cloud data. If BLE disconnects, the daemon closes its Bambu Cloud connection and the ESP32 can use its provisioned Wi-Fi/Bambu Cloud fallback directly.
 
 ## Development
 
@@ -67,6 +68,7 @@ waveshare-clock/
 │   ├── agent_ble/              # NimBLE GATT server
 │   ├── agent_ams/              # Bambu AMS tray screen
 │   ├── agent_pmic/             # AXP2101 PMIC driver
+│   ├── agent_bambu/            # ESP32 Wi-Fi/Bambu Cloud fallback
 │   ├── agent_printer/          # Bambu P2S printer screen
 │   └── agent_viewer/           # LVGL tile shell and agent screens
 ├── host/                       # PC-side agent-viewer utility and helpers

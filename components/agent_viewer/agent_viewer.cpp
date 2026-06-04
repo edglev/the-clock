@@ -190,10 +190,10 @@ static void update_header(void)
         if (label_branch) lv_label_set_text(label_branch, "");
         if (label_model_effort) lv_label_set_text(label_model_effort, "");
         if (label_center_status) {
-            lv_label_set_text(label_center_status, "Waiting");
+            lv_label_set_text(label_center_status, "Waiting for\nconnection");
             lv_obj_set_style_text_color(label_center_status, lv_color_hex(0xB0B0B0), 0);
         }
-        lv_label_set_text(label_stats, "Waiting for connection");
+        lv_label_set_text(label_stats, "");
         lv_obj_set_style_text_color(label_stats, lv_color_hex(0xB0B0B0), 0);
         if (label_agent_count) lv_label_set_text(label_agent_count, "");
     } else if (has_focus) {
@@ -222,7 +222,7 @@ static void update_header(void)
             lv_label_set_text(label_center_status, status);
             lv_obj_set_style_text_color(label_center_status, agent_state_color(focused_header.state), 0);
         }
-        lv_label_set_text(label_stats, status);
+        lv_label_set_text(label_stats, "");
         lv_obj_set_style_text_color(label_stats, agent_state_color(focused_header.state), 0);
 
         if (label_agent_count) {
@@ -241,10 +241,10 @@ static void update_header(void)
         if (label_branch) lv_label_set_text(label_branch, "");
         if (label_model_effort) lv_label_set_text(label_model_effort, "");
         if (label_center_status) {
-            lv_label_set_text(label_center_status, "Ready");
+            lv_label_set_text(label_center_status, "Waiting for\nevents");
             lv_obj_set_style_text_color(label_center_status, lv_color_hex(0xB0B0B0), 0);
         }
-        lv_label_set_text(label_stats, "Waiting for events");
+        lv_label_set_text(label_stats, "");
         lv_obj_set_style_text_color(label_stats, lv_color_hex(0xB0B0B0), 0);
         if (label_agent_count) {
             lv_label_set_text(label_agent_count, "Connected");
@@ -564,12 +564,12 @@ static void create_page_agent(lv_obj_t *tile)
 
     label_center_status = lv_label_create(tile);
     lv_label_set_text(label_center_status, "Waiting");
-    lv_label_set_long_mode(label_center_status, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_width(label_center_status, 320);
-    lv_obj_set_height(label_center_status, 48);
+    lv_label_set_long_mode(label_center_status, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_set_width(label_center_status, 260);
+    lv_obj_set_height(label_center_status, 76);
     lv_obj_set_style_text_align(label_center_status, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_center_status, lv_color_hex(0xB0B0B0), 0);
-    lv_obj_set_style_text_font(label_center_status, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_font(label_center_status, &lv_font_montserrat_24, 0);
     lv_obj_center(label_center_status);
     make_indicator_noninteractive(label_center_status);
 
@@ -583,7 +583,7 @@ static void create_page_agent(lv_obj_t *tile)
     lv_obj_align(label_model_effort, LV_ALIGN_TOP_MID, 0, 272);
 
     label_stats = lv_label_create(tile);
-    lv_label_set_text(label_stats, "Waiting for connection");
+    lv_label_set_text(label_stats, "");
     lv_label_set_long_mode(label_stats, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_width(label_stats, 340);
     lv_obj_set_style_text_align(label_stats, LV_TEXT_ALIGN_CENTER, 0);

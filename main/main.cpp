@@ -7,6 +7,7 @@
 #include "bsp/esp-bsp.h"
 #include "agent_pmic.hpp"
 #include "agent_ble.hpp"
+#include "agent_bambu.hpp"
 #include "agent_viewer.hpp"
 
 static const char *TAG = "agent-viewer";
@@ -34,6 +35,8 @@ extern "C" void app_main(void)
 
     ESP_LOGI(TAG, "Starting BLE");
     agent_ble_init();
+    ESP_LOGI(TAG, "Starting Bambu cloud fallback");
+    agent_bambu_init();
     ESP_LOGI(TAG, "Starting UI");
     agent_viewer_init();
     ESP_LOGI(TAG, "Starting PMIC");

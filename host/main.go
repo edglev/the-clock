@@ -24,6 +24,8 @@ func run(args []string) error {
 		return runHook(args[2:])
 	case "bambu-login":
 		return runBambuLogin(args[2:])
+	case "wifi-setup":
+		return runWifiSetup(args[2:])
 	case "install-codex-hooks":
 		return runInstallHooks("codex", args[2:])
 	case "install-claude-hooks":
@@ -44,11 +46,12 @@ func usageText(bin string) string {
 	return fmt.Sprintf(`Agent Viewer host utility
 
 Usage:
-	  %s daemon
-	  %s bambu-login [--region global|china] [--email EMAIL] [--device SERIAL]
-	  %s hook --provider claude|codex --event EVENT
-	  %s install-codex-hooks [--config PATH] [--bin PATH] [--dry-run]
-	  %s install-claude-hooks [--config PATH] [--bin PATH] [--dry-run]
+  %[1]s daemon
+  %[1]s bambu-login [--region global|china] [--email EMAIL] [--device SERIAL]
+  %[1]s wifi-setup [--ssid SSID] [--password PASSWORD] [--bambu-config PATH]
+  %[1]s hook --provider claude|codex --event EVENT
+  %[1]s install-codex-hooks [--config PATH] [--bin PATH] [--dry-run]
+  %[1]s install-claude-hooks [--config PATH] [--bin PATH] [--dry-run]
 
-	`, bin, bin, bin, bin, bin)
+`, bin)
 }

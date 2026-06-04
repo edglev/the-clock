@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdlib.h>
+#include "mbedtls/base64.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -49,6 +50,13 @@ static portMUX_TYPE s_printer_mux = portMUX_INITIALIZER_UNLOCKED;
 static agent_printer_status_t s_printer_status = {};
 static portMUX_TYPE s_ams_mux = portMUX_INITIALIZER_UNLOCKED;
 static agent_ams_status_t s_ams_status = {};
+static agent_ble_config_handler_t s_config_handler = NULL;
+
+#define CONFIG_B64_MAX_LEN 8192
+static char s_config_b64[CONFIG_B64_MAX_LEN];
+static size_t s_config_b64_len = 0;
+static int s_config_expected_chunks = 0;
+static int s_config_next_chunk = 0;
 
 typedef struct {
     uint8_t addr[6];
@@ -296,9 +304,7 @@ static void upsert_printer_status(char **fields, int field_count)
     if (next.progress_percent > 100) next.progress_percent = 100;
     if (next.progress_percent < -1) next.progress_percent = -1;
 
-    portENTER_CRITICAL(&s_printer_mux);
-    s_printer_status = next;
-    portEXIT_CRITICAL(&s_printer_mux);
+    agent_ble_set_printer_status(&next);
 
     ESP_LOGI(TAG, "Printer update: state=%s progress=%d job=%s source=%s",
              next.state, next.progress_percent, next.job, next.source);
@@ -329,9 +335,7 @@ static void upsert_ams_status(char **fields, int field_count)
     next.updated_ms = now_ms();
     next.valid = true;
 
-    portENTER_CRITICAL(&s_ams_mux);
-    s_ams_status = next;
-    portEXIT_CRITICAL(&s_ams_mux);
+    agent_ble_set_ams_status(&next);
 
     ESP_LOGI(TAG, "AMS update: active=%d humidity=%s tray1=%s tray2=%s tray3=%s tray4=%s",
              next.active_slot, next.humidity,
@@ -339,6 +343,75 @@ static void upsert_ams_status(char **fields, int field_count)
              next.trays[1].material,
              next.trays[2].material,
              next.trays[3].material);
+}
+
+static void handle_config_chunk(char **fields, int field_count)
+{
+    if (!fields || field_count != 4) return;
+
+    int seq = parse_int_field(fields[1], -1);
+    int count = parse_int_field(fields[2], -1);
+    const char *chunk = fields[3];
+    size_t chunk_len = chunk ? strlen(chunk) : 0;
+
+    if (seq < 0 || count <= 0 || count > 64 || chunk_len == 0) return;
+    if (seq == 0) {
+        s_config_b64_len = 0;
+        s_config_expected_chunks = count;
+        s_config_next_chunk = 0;
+    }
+    if (count != s_config_expected_chunks || seq != s_config_next_chunk) {
+        ESP_LOGW(TAG, "Config chunk out of order: seq=%d expected=%d count=%d", seq, s_config_next_chunk, count);
+        s_config_b64_len = 0;
+        s_config_expected_chunks = 0;
+        s_config_next_chunk = 0;
+        return;
+    }
+    if (s_config_b64_len + chunk_len >= sizeof(s_config_b64)) {
+        ESP_LOGW(TAG, "Config payload too large");
+        s_config_b64_len = 0;
+        s_config_expected_chunks = 0;
+        s_config_next_chunk = 0;
+        return;
+    }
+
+    memcpy(&s_config_b64[s_config_b64_len], chunk, chunk_len);
+    s_config_b64_len += chunk_len;
+    s_config_b64[s_config_b64_len] = '\0';
+    s_config_next_chunk++;
+
+    if (s_config_next_chunk != s_config_expected_chunks) return;
+
+    size_t decoded_len = 0;
+    int rc = mbedtls_base64_decode(NULL, 0, &decoded_len, (const unsigned char *)s_config_b64, s_config_b64_len);
+    if (rc != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL || decoded_len == 0 || decoded_len > 4096) {
+        ESP_LOGW(TAG, "Invalid config base64 payload: rc=%d len=%u", rc, (unsigned)decoded_len);
+        s_config_b64_len = 0;
+        s_config_expected_chunks = 0;
+        s_config_next_chunk = 0;
+        return;
+    }
+
+    char *json = (char *)calloc(decoded_len + 1, 1);
+    if (!json) {
+        ESP_LOGW(TAG, "Config allocation failed");
+        return;
+    }
+    rc = mbedtls_base64_decode((unsigned char *)json, decoded_len + 1, &decoded_len,
+                               (const unsigned char *)s_config_b64, s_config_b64_len);
+    if (rc == 0) {
+        json[decoded_len] = '\0';
+        ESP_LOGI(TAG, "Received cloud config over encrypted BLE");
+        if (s_config_handler) {
+            s_config_handler(json);
+        }
+    } else {
+        ESP_LOGW(TAG, "Config decode failed: %d", rc);
+    }
+    free(json);
+    s_config_b64_len = 0;
+    s_config_expected_chunks = 0;
+    s_config_next_chunk = 0;
 }
 
 static void handle_multi_write(const uint8_t *data, int data_len)
@@ -366,6 +439,11 @@ static void handle_multi_write(const uint8_t *data, int data_len)
 
     if (fields[0][0] == 'A') {
         upsert_ams_status(fields, field_count);
+        return;
+    }
+
+    if (fields[0][0] == 'C') {
+        handle_config_chunk(fields, field_count);
         return;
     }
 
@@ -943,6 +1021,35 @@ bool agent_ble_get_ams_status(agent_ams_status_t *out)
     valid = s_ams_status.valid;
     portEXIT_CRITICAL(&s_ams_mux);
     return valid;
+}
+
+void agent_ble_set_printer_status(const agent_printer_status_t *status)
+{
+    if (!status) return;
+    agent_printer_status_t next = *status;
+    next.updated_ms = now_ms();
+    next.valid = true;
+
+    portENTER_CRITICAL(&s_printer_mux);
+    s_printer_status = next;
+    portEXIT_CRITICAL(&s_printer_mux);
+}
+
+void agent_ble_set_ams_status(const agent_ams_status_t *status)
+{
+    if (!status) return;
+    agent_ams_status_t next = *status;
+    next.updated_ms = now_ms();
+    next.valid = true;
+
+    portENTER_CRITICAL(&s_ams_mux);
+    s_ams_status = next;
+    portEXIT_CRITICAL(&s_ams_mux);
+}
+
+void agent_ble_set_config_handler(agent_ble_config_handler_t handler)
+{
+    s_config_handler = handler;
 }
 
 int agent_ble_get_bond_count(void)
