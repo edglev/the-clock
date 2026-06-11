@@ -160,7 +160,7 @@ void agent_ams_timer_update(void)
 {
     if (!label_status) return;
 
-    bool has_status = g_ble_connected && agent_ble_get_ams_status(&ams_status);
+    bool has_status = agent_ble_get_ams_status(&ams_status);
 
     uint32_t sig = 2166136261u;
     sig = hash_bytes(sig, &g_ble_connected, sizeof(g_ble_connected));
@@ -178,10 +178,8 @@ void agent_ams_timer_update(void)
     if (sig == ams_signature) return;
     ams_signature = sig;
 
-    if (!g_ble_connected) {
-        lv_label_set_text(label_status, "Waiting for connection");
-    } else if (!has_status) {
-        lv_label_set_text(label_status, "No AMS data");
+    if (!has_status) {
+        lv_label_set_text(label_status, g_ble_connected ? "No AMS data" : "Waiting for AMS data");
     } else if (ams_status.active_slot >= 0) {
         char active[40];
         if (ams_status.humidity[0]) {

@@ -335,13 +335,12 @@ void agent_printer_timer_update(void)
     if (sig == printer_signature) return;
     printer_signature = sig;
 
-    if (!g_ble_connected) {
-        apply_empty_state("waiting", "Waiting for connection", false);
-        return;
-    }
-
     if (!has_status) {
-        apply_empty_state("offline", "Run bambu-login", true);
+        if (g_ble_connected) {
+            apply_empty_state("offline", "Run bambu-login", true);
+        } else {
+            apply_empty_state("waiting", "Waiting for printer data", false);
+        }
         return;
     }
 

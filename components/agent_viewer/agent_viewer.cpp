@@ -19,6 +19,7 @@ static const char *TAG = "agent_viewer";
 #define DIAL_SIZE 206
 #define NAV_HINT_EDGE_OFFSET 24
 #define WAITING_BLINK_MS 30000u
+#define WAITING_AUTO_IDLE_MS WAITING_BLINK_MS
 
 static lv_obj_t *canvas;
 static lv_draw_buf_t *draw_buf;
@@ -427,6 +428,7 @@ static void update_instances_page(void)
 static void timer_cb(lv_timer_t *t)
 {
     rot_angle = (rot_angle + 6) % 360;
+    agent_ble_idle_stale_waiting(WAITING_AUTO_IDLE_MS);
 
     bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused_timer);
 
@@ -530,7 +532,9 @@ static void create_page_agent(lv_obj_t *tile)
 
     label_provider = lv_label_create(tile);
     lv_label_set_text(label_provider, "");
+    lv_label_set_long_mode(label_provider, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_width(label_provider, 220);
+    lv_obj_set_height(label_provider, 24);
     lv_obj_set_style_text_align(label_provider, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_provider, lv_color_hex(COLOR_CYAN), 0);
     lv_obj_set_style_text_font(label_provider, &lv_font_montserrat_20, 0);
@@ -538,7 +542,9 @@ static void create_page_agent(lv_obj_t *tile)
 
     label_agent_count = lv_label_create(tile);
     lv_label_set_text(label_agent_count, "");
+    lv_label_set_long_mode(label_agent_count, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_width(label_agent_count, 220);
+    lv_obj_set_height(label_agent_count, 20);
     lv_obj_set_style_text_align(label_agent_count, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_agent_count, lv_color_hex(0xB0B0B0), 0);
     lv_obj_set_style_text_font(label_agent_count, &lv_font_montserrat_16, 0);
@@ -548,19 +554,21 @@ static void create_page_agent(lv_obj_t *tile)
     lv_label_set_text(label_project, "");
     lv_label_set_long_mode(label_project, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_width(label_project, 320);
+    lv_obj_set_height(label_project, 30);
     lv_obj_set_style_text_align(label_project, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_project, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(label_project, &lv_font_montserrat_24, 0);
-    lv_obj_align(label_project, LV_ALIGN_TOP_MID, 0, 82);
+    lv_obj_align(label_project, LV_ALIGN_TOP_MID, 0, 80);
 
     label_branch = lv_label_create(tile);
     lv_label_set_text(label_branch, "");
     lv_label_set_long_mode(label_branch, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_width(label_branch, 340);
+    lv_obj_set_height(label_branch, 24);
     lv_obj_set_style_text_align(label_branch, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(label_branch, lv_color_hex(0xB0B0B0), 0);
     lv_obj_set_style_text_font(label_branch, &lv_font_montserrat_20, 0);
-    lv_obj_align(label_branch, LV_ALIGN_TOP_MID, 0, 114);
+    lv_obj_align(label_branch, LV_ALIGN_TOP_MID, 0, 116);
 
     label_center_status = lv_label_create(tile);
     lv_label_set_text(label_center_status, "Waiting");

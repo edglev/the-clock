@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -40,6 +41,9 @@ const (
 	stateThinking byte = 1
 	stateWaiting  byte = 2
 	stateSuccess  byte = 3
+
+	successAutoIdleDelay = 2 * time.Second
+	waitingAutoIdleDelay = 30 * time.Second
 )
 
 var claudeEventToState = map[string]byte{
@@ -125,28 +129,230 @@ type agentInstance struct {
 }
 
 type claudeStats struct {
-	TotalInputTokens  int     `json:"totalInputTokens"`
-	TotalOutputTokens int     `json:"totalOutputTokens"`
-	TotalCost         float64 `json:"totalCost"`
+	TotalInputTokens  int64                         `json:"totalInputTokens"`
+	TotalOutputTokens int64                         `json:"totalOutputTokens"`
+	TotalCost         float64                       `json:"totalCost"`
+	ModelUsage        map[string]claudeModelUsage   `json:"modelUsage"`
+	DailyModelTokens  []claudeDailyModelTokenBucket `json:"dailyModelTokens"`
+}
+
+type claudeModelUsage struct {
+	InputTokens              int64   `json:"inputTokens"`
+	OutputTokens             int64   `json:"outputTokens"`
+	CacheReadInputTokens     int64   `json:"cacheReadInputTokens"`
+	CacheCreationInputTokens int64   `json:"cacheCreationInputTokens"`
+	CostUSD                  float64 `json:"costUSD"`
+}
+
+type claudeDailyModelTokenBucket struct {
+	TokensByModel map[string]claudeModelUsage `json:"tokensByModel"`
+}
+
+type claudeMessageUsage struct {
+	InputTokens              int64   `json:"input_tokens"`
+	OutputTokens             int64   `json:"output_tokens"`
+	CacheReadInputTokens     int64   `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64   `json:"cache_creation_input_tokens"`
+	CostUSD                  float64 `json:"costUSD"`
+}
+
+type usageSummary struct {
+	Tokens int64
+	Cost   float64
+}
+
+type claudeProjectEntry struct {
+	SessionID string          `json:"sessionId"`
+	RequestID string          `json:"requestId"`
+	Message   json.RawMessage `json:"message"`
 }
 
 func readClaudeStats() string {
+	usage, ok := readClaudeAggregateUsage()
+	if !ok {
+		return "no stats"
+	}
+	return formatUsageStats(usage)
+}
+
+func readClaudeInstanceStats(inst agentInstance) string {
+	if usage, ok := readClaudeProjectUsage(inst.SessionID, inst.Key); ok {
+		return formatUsageStats(usage)
+	}
+	return readClaudeStats()
+}
+
+func readClaudeAggregateUsage() (usageSummary, bool) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "home err"
+		return usageSummary{}, false
 	}
 	path := filepath.Join(home, ".claude", "stats-cache.json")
 	f, err := os.Open(path)
 	if err != nil {
-		return "no stats"
+		return usageSummary{}, false
 	}
 	defer f.Close()
-	var s claudeStats
-	if json.NewDecoder(f).Decode(&s) != nil {
-		return "parse err"
+	return parseClaudeStatsCache(f)
+}
+
+func readClaudeProjectUsage(sessionID, cwd string) (usageSummary, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return usageSummary{}, false
 	}
-	total := s.TotalInputTokens + s.TotalOutputTokens
-	return fmt.Sprintf("Cost $%.2f T %.1fk", s.TotalCost, float64(total)/1000.0)
+	projectDir := claudeProjectDir(home, cwd)
+	if projectDir == "" {
+		return usageSummary{}, false
+	}
+
+	if strings.TrimSpace(sessionID) != "" {
+		path := filepath.Join(projectDir, strings.TrimSpace(sessionID)+".jsonl")
+		if f, err := os.Open(path); err == nil {
+			defer f.Close()
+			return parseClaudeProjectUsage(f, sessionID)
+		}
+	}
+
+	path := newestClaudeProjectFile(projectDir)
+	if path == "" {
+		return usageSummary{}, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return usageSummary{}, false
+	}
+	defer f.Close()
+	return parseClaudeProjectUsage(f, "")
+}
+
+func parseClaudeStatsCache(r io.Reader) (usageSummary, bool) {
+	var s claudeStats
+	if json.NewDecoder(r).Decode(&s) != nil {
+		return usageSummary{}, false
+	}
+
+	var usage usageSummary
+	usage.Tokens = s.TotalInputTokens + s.TotalOutputTokens
+	usage.Cost = s.TotalCost
+
+	if len(s.ModelUsage) > 0 {
+		usage = usageSummary{}
+		addClaudeModelUsage(&usage, s.ModelUsage)
+	}
+
+	if usage.Tokens == 0 && len(s.DailyModelTokens) > 0 {
+		for _, day := range s.DailyModelTokens {
+			addClaudeModelUsage(&usage, day.TokensByModel)
+		}
+	}
+
+	return usage, usage.Tokens > 0 || usage.Cost > 0
+}
+
+func addClaudeModelUsage(summary *usageSummary, usageByModel map[string]claudeModelUsage) {
+	for _, usage := range usageByModel {
+		summary.Tokens += usage.InputTokens +
+			usage.OutputTokens +
+			usage.CacheReadInputTokens +
+			usage.CacheCreationInputTokens
+		summary.Cost += usage.CostUSD
+	}
+}
+
+func parseClaudeProjectUsage(r io.Reader, sessionID string) (usageSummary, bool) {
+	var usage usageSummary
+	seenRequests := map[string]bool{}
+	sessionID = strings.TrimSpace(sessionID)
+
+	reader := bufio.NewReader(r)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(strings.TrimSpace(string(line))) > 0 {
+			var entry claudeProjectEntry
+			if json.Unmarshal(line, &entry) == nil {
+				if sessionID == "" || entry.SessionID == "" || entry.SessionID == sessionID {
+					alreadyCounted := false
+					if entry.RequestID != "" {
+						if seenRequests[entry.RequestID] {
+							alreadyCounted = true
+						} else {
+							seenRequests[entry.RequestID] = true
+						}
+					}
+
+					if !alreadyCounted {
+						var message struct {
+							Usage claudeMessageUsage `json:"usage"`
+						}
+						if json.Unmarshal(entry.Message, &message) == nil {
+							usage.Tokens += message.Usage.InputTokens +
+								message.Usage.OutputTokens +
+								message.Usage.CacheReadInputTokens +
+								message.Usage.CacheCreationInputTokens
+							usage.Cost += message.Usage.CostUSD
+						}
+					}
+				}
+			}
+		}
+
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	return usage, usage.Tokens > 0 || usage.Cost > 0
+}
+
+func claudeProjectDir(home, cwd string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" || cwd == "unknown" {
+		return ""
+	}
+	clean := filepath.Clean(cwd)
+	projectName := strings.ReplaceAll(clean, string(filepath.Separator), "-")
+	return filepath.Join(home, ".claude", "projects", projectName)
+}
+
+func newestClaudeProjectFile(projectDir string) string {
+	entries, err := os.ReadDir(projectDir)
+	if err != nil {
+		return ""
+	}
+
+	var newest string
+	var newestTime time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if newest == "" || info.ModTime().After(newestTime) {
+			newest = filepath.Join(projectDir, entry.Name())
+			newestTime = info.ModTime()
+		}
+	}
+	return newest
+}
+
+func formatUsageStats(usage usageSummary) string {
+	if usage.Cost > 0 && usage.Tokens > 0 {
+		return fmt.Sprintf("Cost $%.2f T %s", usage.Cost, formatTokenCount(usage.Tokens))
+	}
+	if usage.Cost > 0 {
+		return fmt.Sprintf("Cost $%.2f", usage.Cost)
+	}
+	if usage.Tokens > 0 {
+		return formatTokenStats(usage.Tokens)
+	}
+	return "no stats"
 }
 
 func readInstanceStats(inst agentInstance) string {
@@ -156,7 +362,7 @@ func readInstanceStats(inst agentInstance) string {
 		}
 		return inst.Status
 	}
-	return readClaudeStats()
+	return readClaudeInstanceStats(inst)
 }
 
 func readInstanceMetrics(inst agentInstance) string {
@@ -618,19 +824,19 @@ func parseEvent(data []byte) hookEvent {
 }
 
 func autoIdle(id string, eventTime time.Time) {
-	time.Sleep(2 * time.Second)
+	time.Sleep(successAutoIdleDelay)
 	autoIdleIfCurrent(id, eventTime, stateSuccess)
 }
 
 func autoIdleAfterWaiting(id string, eventTime time.Time) {
-	time.Sleep(30 * time.Second)
+	time.Sleep(waitingAutoIdleDelay)
 	autoIdleIfCurrent(id, eventTime, stateWaiting)
 }
 
 func autoIdleIfCurrent(id string, eventTime time.Time, requiredState byte) {
 	instancesMu.Lock()
 	inst, ok := instances[id]
-	if !ok || focusedID != id || !inst.Updated.Equal(eventTime) {
+	if !ok || !inst.Updated.Equal(eventTime) {
 		instancesMu.Unlock()
 		return
 	}
@@ -646,7 +852,7 @@ func autoIdleIfCurrent(id string, eventTime time.Time, requiredState byte) {
 
 	instancesMu.Lock()
 	inst, ok = instances[id]
-	if !ok || focusedID != id || !inst.Updated.Equal(eventTime) || inst.State != requiredState {
+	if !ok || !inst.Updated.Equal(eventTime) || inst.State != requiredState {
 		instancesMu.Unlock()
 		return
 	}
@@ -657,6 +863,53 @@ func autoIdleIfCurrent(id string, eventTime time.Time, requiredState byte) {
 	instancesMu.Unlock()
 
 	sendSnapshot()
+}
+
+func autoIdleTimedOutWaiting(now time.Time) bool {
+	var candidates []agentInstance
+
+	instancesMu.Lock()
+	for _, inst := range instances {
+		if normalizeProvider(inst.Provider) != "Claude" || inst.State != stateWaiting {
+			continue
+		}
+		if now.Sub(inst.Updated) < waitingAutoIdleDelay {
+			continue
+		}
+		candidates = append(candidates, *inst)
+	}
+	instancesMu.Unlock()
+
+	if len(candidates) == 0 {
+		return false
+	}
+
+	statsByID := make(map[string]string, len(candidates))
+	for _, inst := range candidates {
+		statsByID[inst.ID] = readInstanceStats(inst)
+	}
+
+	changed := false
+	instancesMu.Lock()
+	for _, candidate := range candidates {
+		inst, ok := instances[candidate.ID]
+		if !ok || normalizeProvider(inst.Provider) != "Claude" || inst.State != stateWaiting {
+			continue
+		}
+		if !inst.Updated.Equal(candidate.Updated) || now.Sub(inst.Updated) < waitingAutoIdleDelay {
+			continue
+		}
+		inst.State = stateIdle
+		inst.Status = statsByID[candidate.ID]
+		inst.Updated = now
+		changed = true
+	}
+	if changed {
+		deriveLabelsLocked()
+	}
+	instancesMu.Unlock()
+
+	return changed
 }
 
 func healthLoop() {
@@ -678,8 +931,12 @@ func healthLoop() {
 
 func pruneLoop() {
 	for range time.NewTicker(10 * time.Second).C {
-		deleted := pruneInstances(time.Now())
+		now := time.Now()
+		deleted := pruneInstances(now)
 		sendDeletedInstances(deleted)
+		if autoIdleTimedOutWaiting(now) {
+			sendSnapshot()
+		}
 	}
 }
 

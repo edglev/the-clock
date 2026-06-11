@@ -25,6 +25,113 @@ func TestEventStateAndStatus(t *testing.T) {
 	}
 }
 
+func TestAutoIdleWaitingDoesNotRequireFocus(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	eventTime := time.Unix(100, 0)
+
+	withDaemonInstances(t, map[string]*agentInstance{
+		"aaaaaaaa": {
+			ID:       "aaaaaaaa",
+			Key:      "/tmp/project-a",
+			Label:    "project-a",
+			Provider: "Claude",
+			State:    stateWaiting,
+			Status:   "Waiting",
+			Updated:  eventTime,
+		},
+		"bbbbbbbb": {
+			ID:       "bbbbbbbb",
+			Key:      "/tmp/project-b",
+			Label:    "project-b",
+			Provider: "Claude",
+			State:    stateThinking,
+			Status:   "Thinking",
+			Updated:  eventTime.Add(time.Second),
+		},
+	}, "bbbbbbbb")
+
+	autoIdleIfCurrent("aaaaaaaa", eventTime, stateWaiting)
+
+	instancesMu.Lock()
+	defer instancesMu.Unlock()
+	inst := instances["aaaaaaaa"]
+	if inst.State != stateIdle {
+		t.Fatalf("state = %d", inst.State)
+	}
+	if focusedID != "bbbbbbbb" {
+		t.Fatalf("focused instance changed to %q", focusedID)
+	}
+}
+
+func TestAutoIdleTimedOutWaitingOnlyChangesStaleClaudeInstances(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	now := time.Unix(200, 0)
+
+	withDaemonInstances(t, map[string]*agentInstance{
+		"aaaaaaaa": {
+			ID:       "aaaaaaaa",
+			Key:      "/tmp/stale-claude",
+			Label:    "stale-claude",
+			Provider: "Claude",
+			State:    stateWaiting,
+			Status:   "Waiting",
+			Updated:  now.Add(-waitingAutoIdleDelay - time.Second),
+		},
+		"bbbbbbbb": {
+			ID:       "bbbbbbbb",
+			Key:      "/tmp/fresh-claude",
+			Label:    "fresh-claude",
+			Provider: "Claude",
+			State:    stateWaiting,
+			Status:   "Waiting",
+			Updated:  now.Add(-waitingAutoIdleDelay + time.Second),
+		},
+		"cccccccc": {
+			ID:       "cccccccc",
+			Key:      "/tmp/stale-codex",
+			Label:    "stale-codex",
+			Provider: "Codex",
+			State:    stateWaiting,
+			Status:   "Approval",
+			Updated:  now.Add(-waitingAutoIdleDelay - time.Second),
+		},
+	}, "bbbbbbbb")
+
+	if !autoIdleTimedOutWaiting(now) {
+		t.Fatal("stale Claude waiting instance was not changed")
+	}
+
+	instancesMu.Lock()
+	defer instancesMu.Unlock()
+	if instances["aaaaaaaa"].State != stateIdle {
+		t.Fatalf("stale Claude state = %d", instances["aaaaaaaa"].State)
+	}
+	if instances["bbbbbbbb"].State != stateWaiting {
+		t.Fatalf("fresh Claude state = %d", instances["bbbbbbbb"].State)
+	}
+	if instances["cccccccc"].State != stateWaiting {
+		t.Fatalf("Codex state = %d", instances["cccccccc"].State)
+	}
+}
+
+func withDaemonInstances(t *testing.T, next map[string]*agentInstance, focus string) {
+	t.Helper()
+
+	instancesMu.Lock()
+	oldInstances := instances
+	oldFocusedID := focusedID
+	instances = next
+	focusedID = focus
+	instancesMu.Unlock()
+
+	t.Cleanup(func() {
+		instancesMu.Lock()
+		instances = oldInstances
+		focusedID = oldFocusedID
+		instancesMu.Unlock()
+	})
+}
+
 func TestInstanceKeyUsesProcessBeforeSession(t *testing.T) {
 	cwd := "/tmp/project"
 	procA := processRef{PID: 123, StartTime: "555"}
@@ -115,6 +222,66 @@ func TestCodexTokensForThread(t *testing.T) {
 
 	if metrics := formatTokenMetrics(tokens); metrics != "4.6k tok" {
 		t.Fatalf("formatted metrics = %q", metrics)
+	}
+}
+
+func TestParseClaudeStatsCacheModelUsage(t *testing.T) {
+	cache := `{
+		"modelUsage": {
+			"claude-a": {
+				"inputTokens": 10,
+				"outputTokens": 20,
+				"cacheReadInputTokens": 30,
+				"cacheCreationInputTokens": 40,
+				"costUSD": 1.25
+			},
+			"claude-b": {
+				"inputTokens": 1,
+				"outputTokens": 2,
+				"cacheReadInputTokens": 3,
+				"cacheCreationInputTokens": 4,
+				"costUSD": 0
+			}
+		}
+	}`
+
+	usage, ok := parseClaudeStatsCache(strings.NewReader(cache))
+	if !ok {
+		t.Fatal("Claude stats cache was not parsed")
+	}
+	if usage.Tokens != 110 {
+		t.Fatalf("tokens = %d", usage.Tokens)
+	}
+	if usage.Cost != 1.25 {
+		t.Fatalf("cost = %f", usage.Cost)
+	}
+	if stats := formatUsageStats(usage); stats != "Cost $1.25 T 110" {
+		t.Fatalf("formatted usage = %q", stats)
+	}
+}
+
+func TestParseClaudeProjectUsageDeduplicatesRequest(t *testing.T) {
+	jsonl := strings.Join([]string{
+		`{"sessionId":"session-a","requestId":"req-a","message":{"usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":4,"costUSD":0.5}}}`,
+		`{"sessionId":"session-a","requestId":"req-a","message":{"usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":4,"costUSD":0.5}}}`,
+		`{"sessionId":"session-b","requestId":"req-b","message":{"usage":{"input_tokens":100,"output_tokens":200,"cache_read_input_tokens":300,"cache_creation_input_tokens":400,"costUSD":9}}}`,
+	}, "\n")
+
+	usage, ok := parseClaudeProjectUsage(strings.NewReader(jsonl), "session-a")
+	if !ok {
+		t.Fatal("Claude project usage was not parsed")
+	}
+	if usage.Tokens != 10 {
+		t.Fatalf("tokens = %d", usage.Tokens)
+	}
+	if usage.Cost != 0.5 {
+		t.Fatalf("cost = %f", usage.Cost)
+	}
+}
+
+func TestFormatUsageStatsHidesZeroCost(t *testing.T) {
+	if stats := formatUsageStats(usageSummary{Tokens: 12345}); stats != "Tokens 12.3k" {
+		t.Fatalf("zero-cost stats = %q", stats)
 	}
 }
 

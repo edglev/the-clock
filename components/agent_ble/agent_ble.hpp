@@ -109,6 +109,7 @@ void agent_ble_notify_action(uint8_t value);
 int  agent_ble_get_instances(agent_instance_info_t *out, int max_count);
 bool agent_ble_get_focused_instance(agent_instance_info_t *out);
 int  agent_ble_get_instance_count(void);
+bool agent_ble_idle_stale_waiting(uint32_t timeout_ms);
 bool agent_ble_get_printer_status(agent_printer_status_t *out);
 bool agent_ble_get_ams_status(agent_ams_status_t *out);
 void agent_ble_set_printer_status(const agent_printer_status_t *status);

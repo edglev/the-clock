@@ -999,6 +999,37 @@ int agent_ble_get_instance_count(void)
     return count;
 }
 
+bool agent_ble_idle_stale_waiting(uint32_t timeout_ms)
+{
+    if (timeout_ms == 0) return false;
+
+    bool changed = false;
+    uint32_t now = now_ms();
+    portENTER_CRITICAL(&s_instances_mux);
+    for (int i = 0; i < s_instance_count; i++) {
+        agent_instance_info_t *inst = &s_instances[i];
+        if (inst->state != AGENT_STATE_WAITING || strcmp(inst->provider, "Claude") != 0) {
+            continue;
+        }
+        uint32_t waiting_since = inst->priority_entered_ms ? inst->priority_entered_ms : inst->updated_ms;
+        if ((uint32_t)(now - waiting_since) < timeout_ms) {
+            continue;
+        }
+        inst->state = AGENT_STATE_IDLE;
+        copy_clean(inst->status, sizeof(inst->status), "Idle");
+        inst->updated_ms = now;
+        inst->priority_entered_ms = now;
+        changed = true;
+    }
+    if (changed) {
+        reselect_focused_instance_locked();
+        sync_legacy_globals_locked(s_focused_index >= 0 ? &s_instances[s_focused_index] : NULL);
+    }
+    portEXIT_CRITICAL(&s_instances_mux);
+
+    return changed;
+}
+
 bool agent_ble_get_printer_status(agent_printer_status_t *out)
 {
     if (!out) return false;
