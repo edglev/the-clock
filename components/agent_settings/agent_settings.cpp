@@ -160,6 +160,8 @@ static void brightness_slider_cb(lv_event_t *e)
 {
     lv_obj_t *slider = (lv_obj_t *)lv_event_get_target(e);
     int val = lv_slider_get_value(slider);
+    if (val < 5) val = 5;
+    if (val > 100) val = 100;
     current_brightness = val;
     char buf[8];
     snprintf(buf, sizeof(buf), "%d%%", val);
@@ -416,7 +418,7 @@ static void create_main_page(lv_obj_t *tile)
     lv_obj_t *slider = lv_slider_create(page_main);
     lv_obj_set_size(slider, 360, 20);
     lv_obj_align(slider, LV_ALIGN_TOP_MID, 0, 118);
-    lv_slider_set_range(slider, 0, 100);
+    lv_slider_set_range(slider, 5, 100);
     lv_slider_set_value(slider, current_brightness, LV_ANIM_OFF);
     lv_obj_add_event_cb(slider, brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_set_style_bg_color(slider, lv_color_hex(0x333333), LV_PART_MAIN);
