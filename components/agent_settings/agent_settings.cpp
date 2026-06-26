@@ -5,6 +5,7 @@
 #include "agent_ble.hpp"
 #include "agent_bambu.hpp"
 #include "agent_pmic.hpp"
+#include "agent_orientation.hpp"
 
 static lv_obj_t *page_main = NULL;
 static lv_obj_t *page_bluetooth = NULL;
@@ -13,6 +14,8 @@ static lv_obj_t *label_ble_status = NULL;
 static lv_obj_t *label_ble_summary = NULL;
 static lv_obj_t *label_battery_status = NULL;
 static lv_obj_t *label_brightness_val = NULL;
+static lv_obj_t *label_orientation_status = NULL;
+static lv_obj_t *orientation_lock_switch = NULL;
 static lv_obj_t *label_wifi_summary = NULL;
 static lv_obj_t *label_wifi_state = NULL;
 static lv_obj_t *label_wifi_ssid = NULL;
@@ -162,6 +165,31 @@ static void brightness_slider_cb(lv_event_t *e)
     snprintf(buf, sizeof(buf), "%d%%", val);
     lv_label_set_text(label_brightness_val, buf);
     bsp_display_brightness_set(val);
+}
+
+static void update_orientation_status(void)
+{
+    if (!label_orientation_status) return;
+
+    char buf[24];
+    int angle = agent_orientation_get_angle_deg();
+    if (agent_orientation_is_locked()) {
+        snprintf(buf, sizeof(buf), "Locked %d deg", angle);
+    } else {
+        snprintf(buf, sizeof(buf), "Auto %d deg", angle);
+    }
+    lv_label_set_text(label_orientation_status, buf);
+    lv_obj_set_style_text_color(label_orientation_status,
+                                agent_orientation_is_locked() ? lv_color_hex(COLOR_CYAN) : lv_color_hex(0x888888),
+                                0);
+}
+
+static void orientation_lock_cb(lv_event_t *e)
+{
+    lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
+    bool locked = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    agent_orientation_set_locked(locked);
+    update_orientation_status();
 }
 
 static void forget_bond_cb(lv_event_t *e)
@@ -410,8 +438,40 @@ static void create_main_page(lv_obj_t *tile)
     lv_obj_set_style_text_font(label_battery_status, &lv_font_montserrat_16, 0);
     lv_obj_align(label_battery_status, LV_ALIGN_TOP_MID, 100, 155);
 
-    create_nav_row(page_main, "Bluetooth", &label_ble_summary, 205, show_bluetooth_cb);
-    create_nav_row(page_main, "Wi-Fi", &label_wifi_summary, 275, show_wifi_cb);
+    lv_obj_t *orientation_row = lv_obj_create(page_main);
+    lv_obj_set_size(orientation_row, 360, 56);
+    lv_obj_align(orientation_row, LV_ALIGN_TOP_MID, 0, 205);
+    lv_obj_set_style_bg_color(orientation_row, lv_color_hex(0x151515), 0);
+    lv_obj_set_style_bg_opa(orientation_row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(orientation_row, 1, 0);
+    lv_obj_set_style_border_color(orientation_row, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_radius(orientation_row, 8, 0);
+    lv_obj_set_style_pad_all(orientation_row, 8, 0);
+    lv_obj_clear_flag(orientation_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(orientation_row, LV_OBJ_FLAG_GESTURE_BUBBLE);
+
+    lv_obj_t *orientation_title = lv_label_create(orientation_row);
+    lv_label_set_text(orientation_title, "Orientation lock");
+    lv_obj_set_style_text_color(orientation_title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(orientation_title, &lv_font_montserrat_16, 0);
+    lv_obj_align(orientation_title, LV_ALIGN_LEFT_MID, 8, -9);
+
+    label_orientation_status = lv_label_create(orientation_row);
+    lv_label_set_text(label_orientation_status, "Auto 0 deg");
+    lv_obj_set_width(label_orientation_status, 220);
+    lv_label_set_long_mode(label_orientation_status, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_color(label_orientation_status, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(label_orientation_status, &lv_font_montserrat_14, 0);
+    lv_obj_align(label_orientation_status, LV_ALIGN_LEFT_MID, 8, 13);
+
+    orientation_lock_switch = lv_switch_create(orientation_row);
+    lv_obj_align(orientation_lock_switch, LV_ALIGN_RIGHT_MID, -8, 0);
+    lv_obj_add_flag(orientation_lock_switch, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(orientation_lock_switch, orientation_lock_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    create_nav_row(page_main, "Bluetooth", &label_ble_summary, 275, show_bluetooth_cb);
+    create_nav_row(page_main, "Wi-Fi", &label_wifi_summary, 345, show_wifi_cb);
+    update_orientation_status();
 }
 
 static void create_bluetooth_page(lv_obj_t *tile)
@@ -463,6 +523,7 @@ void agent_settings_create(lv_obj_t *tile)
     create_bluetooth_page(tile);
     create_wifi_page(tile);
     update_battery_status();
+    update_orientation_status();
     update_wifi_status();
     rebuild_bond_list();
     rebuild_wifi_list();
@@ -471,6 +532,7 @@ void agent_settings_create(lv_obj_t *tile)
 void agent_settings_timer_update(void)
 {
     update_battery_status();
+    update_orientation_status();
     update_wifi_status();
 
     if (label_ble_status) {

@@ -12,6 +12,7 @@
 #include "agent_ring.hpp"
 #include "agent_viewer.hpp"
 #include "agent_settings.hpp"
+#include "agent_orientation.hpp"
 
 static const char *TAG = "agent_viewer";
 
@@ -42,6 +43,7 @@ static lv_obj_t *tile_settings;
 static lv_obj_t *instances_list;
 
 static int   rot_angle = 0;
+static int   orientation_angle = 0;
 static uint32_t instances_signature = 0;
 static uint8_t instances_refresh_tick = 0;
 static agent_instance_info_t provider_summary_items[AGENT_MAX_INSTANCES];
@@ -277,6 +279,43 @@ static void update_ring_visibility(void)
     agent_printer_set_ring_visible(tileview_settled_on(tile_printer));
 }
 
+static void update_orientation_transform(void)
+{
+    if (!tileview) return;
+
+    int angle = agent_orientation_get_angle_deg();
+    if (angle == orientation_angle) return;
+
+    orientation_angle = angle;
+
+    lv_display_rotation_t lv_rotation = LV_DISPLAY_ROTATION_0;
+    bsp_display_rotation_t panel_rotation = BSP_DISPLAY_ROTATE_0;
+
+    switch (orientation_angle) {
+    case 90:
+        lv_rotation = LV_DISPLAY_ROTATION_90;
+        panel_rotation = BSP_DISPLAY_ROTATE_270;
+        break;
+    case 180:
+        lv_rotation = LV_DISPLAY_ROTATION_180;
+        panel_rotation = BSP_DISPLAY_ROTATE_180;
+        break;
+    case 270:
+        lv_rotation = LV_DISPLAY_ROTATION_270;
+        panel_rotation = BSP_DISPLAY_ROTATE_90;
+        break;
+    case 0:
+    default:
+        lv_rotation = LV_DISPLAY_ROTATION_0;
+        panel_rotation = BSP_DISPLAY_ROTATE_0;
+        break;
+    }
+
+    lv_display_set_rotation(lv_display_get_default(), lv_rotation);
+    bsp_display_rotation_set(panel_rotation);
+    lv_obj_invalidate(lv_scr_act());
+}
+
 static void tileview_scroll_cb(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -428,6 +467,8 @@ static void update_instances_page(void)
 static void timer_cb(lv_timer_t *t)
 {
     rot_angle = (rot_angle + 6) % 360;
+    agent_orientation_timer_update();
+    update_orientation_transform();
     agent_ble_idle_stale_waiting(WAITING_AUTO_IDLE_MS);
 
     bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused_timer);
@@ -649,6 +690,7 @@ static void create_page_instances(lv_obj_t *tile)
 void agent_viewer_init(void)
 {
     ESP_LOGI(TAG, "Creating UI");
+    agent_orientation_init();
 
     bsp_display_lock(0);
 
