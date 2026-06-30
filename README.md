@@ -56,6 +56,14 @@ The host daemon aggregates active Claude and Codex sessions, reads available usa
 
 See [DEVELOPMENT.md](DEVELOPMENT.md) for build/flash instructions, host hook setup, BLE protocol details, display constraints, and implementation notes.
 
+## License
+
+This project is licensed under the [Federation Non-Commercial License (FNCL) v1.1](LICENSE). Commercial use requires a separate written license from the copyright holder.
+
+## Acknowledgements
+
+This project is inspired by [PrintSphere](https://github.com/cptkirki/PrintSphere) and borrows some PrintSphere-derived printer UI/assets code. See [`components/agent_printer/assets/NOTICE.md`](components/agent_printer/assets/NOTICE.md) for attribution and license details.
+
 ## Project Structure
 
 ```
