@@ -54,7 +54,7 @@ The host daemon aggregates active Claude and Codex sessions, reads available usa
 
 ## Development
 
-See [DEVELOPEMENT.md](DEVELOPEMENT.md) for build/flash instructions, host hook setup, BLE protocol details, display constraints, and implementation notes.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for build/flash instructions, host hook setup, BLE protocol details, display constraints, and implementation notes.
 
 ## Project Structure
 

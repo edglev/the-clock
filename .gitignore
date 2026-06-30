@@ -6,3 +6,7 @@ dependencies.lock
 host/agent-viewer
 README.local.md
 .vscode
+.agents/
+.claude/
+.codex/
+.serena/

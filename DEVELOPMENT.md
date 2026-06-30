@@ -100,8 +100,6 @@ Install Claude Code hooks into `~/.claude/settings.json`:
 ./host/agent-viewer install-claude-hooks
 ```
 
-Alternatively, copy `host/settings_snippet.json` into your Claude Code settings and replace `/absolute/path/to/agent-viewer` with the built binary path.
-
 ### Codex CLI
 
 Install global Codex hooks:
