@@ -25,6 +25,26 @@ func TestEventStateAndStatus(t *testing.T) {
 	}
 }
 
+func TestCodexRequestUserInputIsQuestion(t *testing.T) {
+	state, status, ok := hookEventStateAndStatus(hookEvent{
+		Provider: "Codex",
+		Event:    "PreToolUse",
+		ToolName: "request_user_input",
+	})
+	if !ok || state != stateWaiting || status != "Question" {
+		t.Fatalf("Codex request_user_input = (%d, %q, %v)", state, status, ok)
+	}
+
+	state, status, ok = hookEventStateAndStatus(hookEvent{
+		Provider: "Codex",
+		Event:    "PreToolUse",
+		ToolName: "Bash",
+	})
+	if !ok || state != stateThinking || status != "Thinking" {
+		t.Fatalf("Codex Bash = (%d, %q, %v)", state, status, ok)
+	}
+}
+
 func TestAutoIdleWaitingDoesNotRequireFocus(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	eventTime := time.Unix(100, 0)

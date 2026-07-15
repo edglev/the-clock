@@ -486,6 +486,15 @@ func eventStateAndStatus(provider, event string) (byte, string, bool) {
 	return state, status, true
 }
 
+func hookEventStateAndStatus(ev hookEvent) (byte, string, bool) {
+	if normalizeProvider(ev.Provider) == "Codex" &&
+		ev.Event == "PreToolUse" &&
+		strings.TrimSpace(ev.ToolName) == "request_user_input" {
+		return stateWaiting, "Question", true
+	}
+	return eventStateAndStatus(ev.Provider, ev.Event)
+}
+
 func normalizeProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "codex", "openai codex":
@@ -750,7 +759,7 @@ func handleConn(conn net.Conn) {
 	}
 	fmt.Printf("[unix] event: %s provider=%s cwd=%s%s\n", ev.Event, provider, ev.CWD, processLabel)
 
-	state, status, ok := eventStateAndStatus(provider, ev.Event)
+	state, status, ok := hookEventStateAndStatus(ev)
 	if !ok {
 		return
 	}
