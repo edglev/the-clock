@@ -16,6 +16,7 @@
 #include "host/ble_store.h"
 #include "agent_viewer.hpp"
 #include "agent_ble.hpp"
+#include "agent_features.hpp"
 
 extern "C" void ble_store_config_init(void);
 
@@ -50,7 +51,10 @@ static portMUX_TYPE s_printer_mux = portMUX_INITIALIZER_UNLOCKED;
 static agent_printer_status_t s_printer_status = {};
 static portMUX_TYPE s_ams_mux = portMUX_INITIALIZER_UNLOCKED;
 static agent_ams_status_t s_ams_status = {};
-static agent_ble_config_handler_t s_config_handler = NULL;
+static portMUX_TYPE s_merge_requests_mux = portMUX_INITIALIZER_UNLOCKED;
+static agent_merge_request_status_t s_merge_requests = {};
+#define MAX_CONFIG_HANDLERS 3
+static agent_ble_config_handler_t s_config_handlers[MAX_CONFIG_HANDLERS] = {};
 
 #define CONFIG_B64_MAX_LEN 8192
 static char s_config_b64[CONFIG_B64_MAX_LEN];
@@ -402,8 +406,8 @@ static void handle_config_chunk(char **fields, int field_count)
     if (rc == 0) {
         json[decoded_len] = '\0';
         ESP_LOGI(TAG, "Received cloud config over encrypted BLE");
-        if (s_config_handler) {
-            s_config_handler(json);
+        for (int i = 0; i < MAX_CONFIG_HANDLERS; i++) {
+            if (s_config_handlers[i]) s_config_handlers[i](json);
         }
     } else {
         ESP_LOGW(TAG, "Config decode failed: %d", rc);
@@ -433,12 +437,12 @@ static void handle_multi_write(const uint8_t *data, int data_len)
     }
 
     if (fields[0][0] == 'P') {
-        upsert_printer_status(fields, field_count);
+        if (agent_feature_is_enabled(AGENT_FEATURE_PRINTER)) upsert_printer_status(fields, field_count);
         return;
     }
 
     if (fields[0][0] == 'A') {
-        upsert_ams_status(fields, field_count);
+        if (agent_feature_is_enabled(AGENT_FEATURE_PRINTER)) upsert_ams_status(fields, field_count);
         return;
     }
 
@@ -1054,6 +1058,26 @@ bool agent_ble_get_ams_status(agent_ams_status_t *out)
     return valid;
 }
 
+bool agent_ble_get_merge_requests(agent_merge_request_status_t *out)
+{
+    if (!out) return false;
+
+    bool valid;
+    portENTER_CRITICAL(&s_merge_requests_mux);
+    *out = s_merge_requests;
+    valid = s_merge_requests.valid;
+    portEXIT_CRITICAL(&s_merge_requests_mux);
+    return valid;
+}
+
+void agent_ble_set_merge_requests(const agent_merge_request_status_t *status)
+{
+    if (!status) return;
+    portENTER_CRITICAL(&s_merge_requests_mux);
+    s_merge_requests = *status;
+    portEXIT_CRITICAL(&s_merge_requests_mux);
+}
+
 void agent_ble_set_printer_status(const agent_printer_status_t *status)
 {
     if (!status) return;
@@ -1078,9 +1102,16 @@ void agent_ble_set_ams_status(const agent_ams_status_t *status)
     portEXIT_CRITICAL(&s_ams_mux);
 }
 
-void agent_ble_set_config_handler(agent_ble_config_handler_t handler)
+bool agent_ble_add_config_handler(agent_ble_config_handler_t handler)
 {
-    s_config_handler = handler;
+    if (!handler) return false;
+    for (int i = 0; i < MAX_CONFIG_HANDLERS; i++) {
+        if (!s_config_handlers[i]) {
+            s_config_handlers[i] = handler;
+            return true;
+        }
+    }
+    return false;
 }
 
 int agent_ble_get_bond_count(void)

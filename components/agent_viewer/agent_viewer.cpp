@@ -8,10 +8,12 @@
 #include "agent_ble.hpp"
 #include "agent_pmic.hpp"
 #include "agent_printer.hpp"
+#include "agent_merge_requests.hpp"
 #include "agent_ams.hpp"
 #include "agent_ring.hpp"
 #include "agent_viewer.hpp"
 #include "agent_settings.hpp"
+#include "agent_features.hpp"
 #include "agent_orientation.hpp"
 
 static const char *TAG = "agent_viewer";
@@ -37,6 +39,7 @@ static lv_obj_t *status_ring;
 static lv_obj_t *tileview;
 static lv_obj_t *tile_agent;
 static lv_obj_t *tile_instances;
+static lv_obj_t *tile_merge_requests;
 static lv_obj_t *tile_printer;
 static lv_obj_t *tile_ams;
 static lv_obj_t *tile_settings;
@@ -276,7 +279,11 @@ static bool tileview_settled_on(lv_obj_t *tile)
 static void update_ring_visibility(void)
 {
     set_status_ring_visible(tileview_settled_on(tile_agent));
+    agent_merge_requests_set_ring_visible(tileview_settled_on(tile_merge_requests));
     agent_printer_set_ring_visible(tileview_settled_on(tile_printer));
+    if (tileview_settled_on(tile_merge_requests)) {
+        agent_merge_requests_mark_seen();
+    }
 }
 
 static void update_orientation_transform(void)
@@ -321,6 +328,7 @@ static void tileview_scroll_cb(lv_event_t *e)
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_SCROLL_BEGIN) {
         set_status_ring_visible(false);
+        agent_merge_requests_set_ring_visible(false);
         agent_printer_set_ring_visible(false);
     } else if (code == LV_EVENT_SCROLL_END) {
         update_ring_visibility();
@@ -488,6 +496,9 @@ static void timer_cb(lv_timer_t *t)
         default:                   ring_color = lv_color_hex(COLOR_CYAN); break;
         }
     }
+    if (agent_merge_requests_has_unseen()) {
+        ring_color = agent_merge_requests_alert_on() ? lv_color_hex(0xFFFFFF) : lv_color_hex(0xFC6D26);
+    }
     lv_obj_set_style_arc_color(status_ring, ring_color, LV_PART_INDICATOR);
 
     bool tile_scrolling = tileview && lv_obj_is_scrolling(tileview);
@@ -495,12 +506,17 @@ static void timer_cb(lv_timer_t *t)
         update_ring_visibility();
         update_canvas();
         update_header();
-        if (++instances_refresh_tick >= 20) {
+        if (agent_feature_is_enabled(AGENT_FEATURE_AGENTS) && ++instances_refresh_tick >= 20) {
             instances_refresh_tick = 0;
             update_instances_page();
         }
-        agent_printer_timer_update();
-        agent_ams_timer_update();
+        if (agent_feature_is_enabled(AGENT_FEATURE_PRINTER)) {
+            agent_printer_timer_update();
+            agent_ams_timer_update();
+        }
+        if (agent_feature_is_enabled(AGENT_FEATURE_GITLAB)) {
+            agent_merge_requests_timer_update();
+        }
         agent_settings_timer_update();
     }
 }
@@ -528,18 +544,25 @@ static lv_obj_t *create_nav_hint(lv_obj_t *parent, const char *symbol, lv_align_
 
 static void create_page_indicators(void)
 {
-    create_nav_hint(tile_agent, LV_SYMBOL_DOWN, LV_ALIGN_BOTTOM_MID, 0, -NAV_HINT_EDGE_OFFSET);
+    if (tile_instances) create_nav_hint(tile_agent, LV_SYMBOL_DOWN, LV_ALIGN_BOTTOM_MID, 0, -NAV_HINT_EDGE_OFFSET);
     create_nav_hint(tile_agent, LV_SYMBOL_RIGHT, LV_ALIGN_RIGHT_MID, -NAV_HINT_EDGE_OFFSET, 0);
 
-    create_nav_hint(tile_instances, LV_SYMBOL_UP, LV_ALIGN_TOP_MID, 0, NAV_HINT_EDGE_OFFSET);
+    if (tile_instances) create_nav_hint(tile_instances, LV_SYMBOL_UP, LV_ALIGN_TOP_MID, 0, NAV_HINT_EDGE_OFFSET);
+
+    if (tile_merge_requests) {
+        create_nav_hint(tile_merge_requests, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
+        create_nav_hint(tile_merge_requests, LV_SYMBOL_RIGHT, LV_ALIGN_RIGHT_MID, -NAV_HINT_EDGE_OFFSET, 0);
+    }
+
+    if (tile_printer) {
+        create_nav_hint(tile_printer, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
+        create_nav_hint(tile_printer, LV_SYMBOL_RIGHT, LV_ALIGN_RIGHT_MID, -NAV_HINT_EDGE_OFFSET, 0);
+        create_nav_hint(tile_printer, LV_SYMBOL_DOWN, LV_ALIGN_BOTTOM_MID, 0, -NAV_HINT_EDGE_OFFSET);
+    }
+
+    if (tile_ams) create_nav_hint(tile_ams, LV_SYMBOL_UP, LV_ALIGN_TOP_MID, 0, NAV_HINT_EDGE_OFFSET);
 
     create_nav_hint(tile_settings, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
-
-    create_nav_hint(tile_printer, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
-    create_nav_hint(tile_printer, LV_SYMBOL_RIGHT, LV_ALIGN_RIGHT_MID, -NAV_HINT_EDGE_OFFSET, 0);
-    create_nav_hint(tile_printer, LV_SYMBOL_DOWN, LV_ALIGN_BOTTOM_MID, 0, -NAV_HINT_EDGE_OFFSET);
-
-    create_nav_hint(tile_ams, LV_SYMBOL_UP, LV_ALIGN_TOP_MID, 0, NAV_HINT_EDGE_OFFSET);
 }
 
 static void create_status_ring(lv_obj_t *parent)
@@ -705,28 +728,46 @@ void agent_viewer_init(void)
     lv_obj_set_style_bg_opa(tileview, LV_OPA_COVER, 0);
     lv_obj_set_scrollbar_mode(tileview, LV_SCROLLBAR_MODE_OFF);
 
-    tile_agent = lv_tileview_add_tile(tileview, 0, 0, (lv_dir_t)(LV_DIR_RIGHT | LV_DIR_BOTTOM));
+    bool agents_enabled = agent_feature_is_enabled(AGENT_FEATURE_AGENTS);
+    bool gitlab_enabled = agent_feature_is_enabled(AGENT_FEATURE_GITLAB);
+    bool printer_enabled = agent_feature_is_enabled(AGENT_FEATURE_PRINTER);
+
+    lv_dir_t agent_dirs = agents_enabled ? (lv_dir_t)(LV_DIR_RIGHT | LV_DIR_BOTTOM) : LV_DIR_RIGHT;
+    tile_agent = lv_tileview_add_tile(tileview, 0, 0, agent_dirs);
     lv_obj_set_style_bg_opa(tile_agent, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(tile_agent, 0, 0);
     create_status_ring(tile_agent);
     create_page_agent(tile_agent);
 
-    tile_instances = lv_tileview_add_tile(tileview, 0, 1, LV_DIR_TOP);
-    lv_obj_set_style_bg_opa(tile_instances, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(tile_instances, 0, 0);
-    create_page_instances(tile_instances);
+    if (agents_enabled) {
+        tile_instances = lv_tileview_add_tile(tileview, 0, 1, LV_DIR_TOP);
+        lv_obj_set_style_bg_opa(tile_instances, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(tile_instances, 0, 0);
+        create_page_instances(tile_instances);
+    }
 
-    tile_printer = lv_tileview_add_tile(tileview, 1, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT | LV_DIR_BOTTOM));
-    lv_obj_set_style_bg_opa(tile_printer, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(tile_printer, 0, 0);
-    agent_printer_create(tile_printer);
+    int column = 1;
+    if (gitlab_enabled) {
+        tile_merge_requests = lv_tileview_add_tile(tileview, column++, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
+        lv_obj_set_style_bg_opa(tile_merge_requests, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(tile_merge_requests, 0, 0);
+        agent_merge_requests_create(tile_merge_requests);
+    }
 
-    tile_ams = lv_tileview_add_tile(tileview, 1, 1, LV_DIR_TOP);
-    lv_obj_set_style_bg_opa(tile_ams, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(tile_ams, 0, 0);
-    agent_ams_create(tile_ams);
+    if (printer_enabled) {
+        tile_printer = lv_tileview_add_tile(tileview, column, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT | LV_DIR_BOTTOM));
+        lv_obj_set_style_bg_opa(tile_printer, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(tile_printer, 0, 0);
+        agent_printer_create(tile_printer);
 
-    tile_settings = lv_tileview_add_tile(tileview, 2, 0, LV_DIR_LEFT);
+        tile_ams = lv_tileview_add_tile(tileview, column, 1, LV_DIR_TOP);
+        lv_obj_set_style_bg_opa(tile_ams, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(tile_ams, 0, 0);
+        agent_ams_create(tile_ams);
+        column++;
+    }
+
+    tile_settings = lv_tileview_add_tile(tileview, column, 0, LV_DIR_LEFT);
     lv_obj_set_style_bg_opa(tile_settings, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(tile_settings, 0, 0);
     agent_settings_create(tile_settings);
@@ -743,9 +784,12 @@ void agent_viewer_init(void)
     lv_timer_create(timer_cb, 25, NULL);
     update_canvas();
     update_header();
-    update_instances_page();
-    agent_printer_timer_update();
-    agent_ams_timer_update();
+    if (agents_enabled) update_instances_page();
+    if (gitlab_enabled) agent_merge_requests_timer_update();
+    if (printer_enabled) {
+        agent_printer_timer_update();
+        agent_ams_timer_update();
+    }
 
     bsp_display_unlock();
     ESP_LOGI(TAG, "UI ready");

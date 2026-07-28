@@ -2,14 +2,17 @@
 #include <inttypes.h>
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
+#include "esp_system.h"
 #include "agent_ble.hpp"
 #include "agent_bambu.hpp"
+#include "agent_features.hpp"
 #include "agent_pmic.hpp"
 #include "agent_orientation.hpp"
 
 static lv_obj_t *page_main = NULL;
 static lv_obj_t *page_bluetooth = NULL;
 static lv_obj_t *page_wifi = NULL;
+static lv_obj_t *page_screens = NULL;
 static lv_obj_t *label_ble_status = NULL;
 static lv_obj_t *label_ble_summary = NULL;
 static lv_obj_t *label_battery_status = NULL;
@@ -26,6 +29,8 @@ static lv_obj_t *wifi_list_cont = NULL;
 static int current_brightness = 100;
 static lv_obj_t *bond_list_cont = NULL;
 static lv_obj_t *pair_btn = NULL;
+static lv_obj_t *restart_overlay = NULL;
+static bool restart_pending = false;
 static int last_bond_count = -1;
 static int last_wifi_count = -1;
 
@@ -37,12 +42,14 @@ static void show_page(lv_obj_t *page)
     if (page_main) lv_obj_add_flag(page_main, LV_OBJ_FLAG_HIDDEN);
     if (page_bluetooth) lv_obj_add_flag(page_bluetooth, LV_OBJ_FLAG_HIDDEN);
     if (page_wifi) lv_obj_add_flag(page_wifi, LV_OBJ_FLAG_HIDDEN);
+    if (page_screens) lv_obj_add_flag(page_screens, LV_OBJ_FLAG_HIDDEN);
     if (page) lv_obj_clear_flag(page, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void show_main_cb(lv_event_t *e) { show_page(page_main); }
 static void show_bluetooth_cb(lv_event_t *e) { show_page(page_bluetooth); }
 static void show_wifi_cb(lv_event_t *e) { show_page(page_wifi); }
+static void show_screens_cb(lv_event_t *e) { show_page(page_screens); }
 
 static lv_obj_t *create_page(lv_obj_t *tile, bool hidden)
 {
@@ -192,6 +199,96 @@ static void orientation_lock_cb(lv_event_t *e)
     bool locked = lv_obj_has_state(sw, LV_STATE_CHECKED);
     agent_orientation_set_locked(locked);
     update_orientation_status();
+}
+
+static void restart_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (restart_overlay) {
+        lv_obj_clean(restart_overlay);
+        lv_obj_set_style_bg_opa(restart_overlay, LV_OPA_COVER, 0);
+        lv_obj_invalidate(restart_overlay);
+        lv_refr_now(NULL);
+    }
+    esp_restart();
+}
+
+static void show_restart_indicator(void)
+{
+    if (restart_overlay || !page_screens) return;
+
+    restart_overlay = lv_obj_create(page_screens);
+    lv_obj_remove_style_all(restart_overlay);
+    lv_obj_set_size(restart_overlay, 466, 466);
+    lv_obj_center(restart_overlay);
+    lv_obj_set_style_bg_color(restart_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(restart_overlay, LV_OPA_90, 0);
+    lv_obj_add_flag(restart_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(restart_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *spinner = lv_spinner_create(restart_overlay);
+    lv_obj_set_size(spinner, 58, 58);
+    lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -36);
+    lv_obj_set_style_arc_color(spinner, lv_color_hex(COLOR_CYAN_DARK), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(spinner, lv_color_hex(COLOR_CYAN), LV_PART_INDICATOR);
+    lv_spinner_set_anim_params(spinner, 700, 220);
+
+    lv_obj_t *label = lv_label_create(restart_overlay);
+    lv_label_set_text(label, "Setting saved\nRestarting...");
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
+    lv_obj_align(label, LV_ALIGN_CENTER, 0, 42);
+}
+
+static void screen_toggle_cb(lv_event_t *e)
+{
+    if (restart_pending) return;
+
+    lv_obj_t *sw = (lv_obj_t *)lv_event_get_target(e);
+    agent_feature_t feature = (agent_feature_t)(intptr_t)lv_event_get_user_data(e);
+    bool enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    if (agent_feature_set_enabled(feature, enabled)) {
+        restart_pending = true;
+        show_restart_indicator();
+        lv_timer_t *timer = lv_timer_create(restart_timer_cb, 600, NULL);
+        lv_timer_set_repeat_count(timer, 1);
+    }
+}
+
+static void create_screen_toggle(lv_obj_t *parent, const char *title, const char *detail,
+                                 agent_feature_t feature, int y)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_size(row, 360, 68);
+    lv_obj_align(row, LV_ALIGN_TOP_MID, 0, y);
+    lv_obj_set_style_bg_color(row, lv_color_hex(0x151515), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_border_color(row, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_radius(row, 8, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(row, LV_OBJ_FLAG_GESTURE_BUBBLE);
+
+    lv_obj_t *title_label = lv_label_create(row);
+    lv_label_set_text(title_label, title);
+    lv_obj_set_style_text_color(title_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_16, 0);
+    lv_obj_align(title_label, LV_ALIGN_LEFT_MID, 10, -12);
+
+    lv_obj_t *detail_label = lv_label_create(row);
+    lv_label_set_text(detail_label, detail);
+    lv_obj_set_width(detail_label, 250);
+    lv_label_set_long_mode(detail_label, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_color(detail_label, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_text_font(detail_label, &lv_font_montserrat_12, 0);
+    lv_obj_align(detail_label, LV_ALIGN_LEFT_MID, 10, 14);
+
+    lv_obj_t *sw = lv_switch_create(row);
+    lv_obj_align(sw, LV_ALIGN_RIGHT_MID, -8, 0);
+    if (agent_feature_is_enabled(feature)) lv_obj_add_state(sw, LV_STATE_CHECKED);
+    lv_obj_add_flag(sw, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(sw, screen_toggle_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)feature);
 }
 
 static void forget_bond_cb(lv_event_t *e)
@@ -440,40 +537,45 @@ static void create_main_page(lv_obj_t *tile)
     lv_obj_set_style_text_font(label_battery_status, &lv_font_montserrat_16, 0);
     lv_obj_align(label_battery_status, LV_ALIGN_TOP_MID, 100, 155);
 
-    lv_obj_t *orientation_row = lv_obj_create(page_main);
+    create_nav_row(page_main, "Screens", &label_orientation_status, 205, show_screens_cb);
+    create_nav_row(page_main, "Bluetooth", &label_ble_summary, 275, show_bluetooth_cb);
+    create_nav_row(page_main, "Wi-Fi", &label_wifi_summary, 345, show_wifi_cb);
+    update_orientation_status();
+}
+
+static void create_screens_page(lv_obj_t *tile)
+{
+    page_screens = create_page(tile, true);
+    create_back_button(page_screens);
+    create_label(page_screens, "Screens", 38, &lv_font_montserrat_24, COLOR_CYAN);
+    create_screen_toggle(page_screens, "Agents", "Agent roster page", AGENT_FEATURE_AGENTS, 92);
+    create_screen_toggle(page_screens, "Merge Requests", "GitLab polling and alerts", AGENT_FEATURE_GITLAB, 174);
+    create_screen_toggle(page_screens, "Printer + AMS", "Bambu status processing", AGENT_FEATURE_PRINTER, 256);
+
+    lv_obj_t *orientation_row = lv_obj_create(page_screens);
     lv_obj_set_size(orientation_row, 360, 56);
-    lv_obj_align(orientation_row, LV_ALIGN_TOP_MID, 0, 205);
+    lv_obj_align(orientation_row, LV_ALIGN_TOP_MID, 0, 338);
     lv_obj_set_style_bg_color(orientation_row, lv_color_hex(0x151515), 0);
     lv_obj_set_style_bg_opa(orientation_row, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(orientation_row, 1, 0);
     lv_obj_set_style_border_color(orientation_row, lv_color_hex(0x333333), 0);
     lv_obj_set_style_radius(orientation_row, 8, 0);
-    lv_obj_set_style_pad_all(orientation_row, 8, 0);
     lv_obj_clear_flag(orientation_row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(orientation_row, LV_OBJ_FLAG_GESTURE_BUBBLE);
 
-    lv_obj_t *orientation_title = lv_label_create(orientation_row);
-    lv_label_set_text(orientation_title, "Orientation lock");
-    lv_obj_set_style_text_color(orientation_title, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(orientation_title, &lv_font_montserrat_16, 0);
-    lv_obj_align(orientation_title, LV_ALIGN_LEFT_MID, 8, -9);
-
-    label_orientation_status = lv_label_create(orientation_row);
-    lv_label_set_text(label_orientation_status, "Auto 0 deg");
-    lv_obj_set_width(label_orientation_status, 220);
-    lv_label_set_long_mode(label_orientation_status, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_style_text_color(label_orientation_status, lv_color_hex(0x888888), 0);
-    lv_obj_set_style_text_font(label_orientation_status, &lv_font_montserrat_14, 0);
-    lv_obj_align(label_orientation_status, LV_ALIGN_LEFT_MID, 8, 13);
+    lv_obj_t *title = lv_label_create(orientation_row);
+    lv_label_set_text(title, "Orientation lock");
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 8, -9);
 
     orientation_lock_switch = lv_switch_create(orientation_row);
     lv_obj_align(orientation_lock_switch, LV_ALIGN_RIGHT_MID, -8, 0);
     lv_obj_add_flag(orientation_lock_switch, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    if (agent_orientation_is_locked()) {
+        lv_obj_add_state(orientation_lock_switch, LV_STATE_CHECKED);
+    }
     lv_obj_add_event_cb(orientation_lock_switch, orientation_lock_cb, LV_EVENT_VALUE_CHANGED, NULL);
-
-    create_nav_row(page_main, "Bluetooth", &label_ble_summary, 275, show_bluetooth_cb);
-    create_nav_row(page_main, "Wi-Fi", &label_wifi_summary, 345, show_wifi_cb);
-    update_orientation_status();
 }
 
 static void create_bluetooth_page(lv_obj_t *tile)
@@ -522,6 +624,7 @@ static void create_wifi_page(lv_obj_t *tile)
 void agent_settings_create(lv_obj_t *tile)
 {
     create_main_page(tile);
+    create_screens_page(tile);
     create_bluetooth_page(tile);
     create_wifi_page(tile);
     update_battery_status();

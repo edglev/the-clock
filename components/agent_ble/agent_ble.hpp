@@ -44,6 +44,11 @@ extern "C" {
 #define AGENT_AMS_MATERIAL_LEN 12
 #define AGENT_AMS_COLOR_LEN 8
 #define AGENT_AMS_HUMIDITY_LEN 8
+#define AGENT_MR_MAX_COUNT 5
+#define AGENT_MR_ID_LEN 24
+#define AGENT_MR_REFERENCE_LEN 36
+#define AGENT_MR_TITLE_LEN 72
+#define AGENT_MR_STATUS_LEN 24
 
 enum agent_state {
     AGENT_STATE_IDLE     = 0,
@@ -97,6 +102,22 @@ typedef struct {
     bool valid;
 } agent_ams_status_t;
 
+typedef struct {
+    char id[AGENT_MR_ID_LEN + 1];
+    char reference[AGENT_MR_REFERENCE_LEN + 1];
+    char title[AGENT_MR_TITLE_LEN + 1];
+    char status[AGENT_MR_STATUS_LEN + 1];
+} agent_merge_request_t;
+
+typedef struct {
+    agent_merge_request_t items[AGENT_MR_MAX_COUNT];
+    uint32_t sequence;
+    uint8_t count;
+    bool new_items;
+    bool auth_invalid;
+    bool valid;
+} agent_merge_request_status_t;
+
 typedef void (*agent_ble_config_handler_t)(const char *json);
 
 extern uint8_t g_ble_state;
@@ -112,9 +133,11 @@ int  agent_ble_get_instance_count(void);
 bool agent_ble_idle_stale_waiting(uint32_t timeout_ms);
 bool agent_ble_get_printer_status(agent_printer_status_t *out);
 bool agent_ble_get_ams_status(agent_ams_status_t *out);
+bool agent_ble_get_merge_requests(agent_merge_request_status_t *out);
 void agent_ble_set_printer_status(const agent_printer_status_t *status);
 void agent_ble_set_ams_status(const agent_ams_status_t *status);
-void agent_ble_set_config_handler(agent_ble_config_handler_t handler);
+void agent_ble_set_merge_requests(const agent_merge_request_status_t *status);
+bool agent_ble_add_config_handler(agent_ble_config_handler_t handler);
 int  agent_ble_get_bond_count(void);
 bool agent_ble_get_bond(int index, uint8_t addr[6]);
 const char *agent_ble_get_bond_name(int index);

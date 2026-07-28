@@ -15,16 +15,18 @@ import (
 const wifiConfigChunkLen = 180
 
 type deviceCloudConfig struct {
-	SSID        string `json:"ssid"`
-	WifiPass    string `json:"wifi_password"`
+	SSID        string `json:"ssid,omitempty"`
+	WifiPass    string `json:"wifi_password,omitempty"`
 	Region      string `json:"region,omitempty"`
-	MQTTBroker  string `json:"mqtt_broker"`
-	AccessToken string `json:"access_token"`
-	UserID      string `json:"user_id"`
-	DeviceID    string `json:"device_id"`
+	MQTTBroker  string `json:"mqtt_broker,omitempty"`
+	AccessToken string `json:"access_token,omitempty"`
+	UserID      string `json:"user_id,omitempty"`
+	DeviceID    string `json:"device_id,omitempty"`
 	DeviceName  string `json:"device_name,omitempty"`
 	DeviceModel string `json:"device_model,omitempty"`
 	DeviceProd  string `json:"device_product,omitempty"`
+	GitLabURL   string `json:"gitlab_url,omitempty"`
+	GitLabToken string `json:"gitlab_pat,omitempty"`
 }
 
 func runWifiSetup(args []string) error {
@@ -78,6 +80,14 @@ func runWifiSetup(args []string) error {
 		DeviceModel: cfg.DeviceModel,
 		DeviceProd:  cfg.DeviceProduct,
 	}
+	if err := sendDeviceCloudConfig(deviceCfg); err != nil {
+		return err
+	}
+	fmt.Printf("Sent Wi-Fi and Bambu Cloud config for %s over encrypted BLE\n", firstNonEmpty(cfg.DeviceName, cfg.DeviceID))
+	return nil
+}
+
+func sendDeviceCloudConfig(deviceCfg deviceCloudConfig) error {
 	data, err := json.Marshal(deviceCfg)
 	if err != nil {
 		return err
@@ -121,7 +131,6 @@ func runWifiSetup(args []string) error {
 		time.Sleep(80 * time.Millisecond)
 	}
 
-	fmt.Printf("Sent Wi-Fi and Bambu Cloud config for %s over encrypted BLE\n", firstNonEmpty(cfg.DeviceName, cfg.DeviceID))
 	return nil
 }
 

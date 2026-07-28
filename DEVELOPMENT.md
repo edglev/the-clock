@@ -146,6 +146,16 @@ Printer and AMS status are cloud-first for the P2S so the printer can stay in no
 
 Printer states are `offline`, `idle`, `printing`, `paused`, `error`, and `unknown`. Empty printer/AMS fields are allowed and rendered as `--` or `Empty`; text fields are tab/newline sanitized and truncated on the host before BLE send. Firmware freshness text shows `just now` for the first minute and then advances in one-minute buckets.
 
+After provisioning Wi-Fi separately with `wifi-setup`, send a GitLab personal access token while the device is paired:
+
+```bash
+./host/agent-viewer gitlab-setup
+```
+
+The command securely prompts only for the GitLab PAT unless supplied with `--token`, then sends the URL and PAT over the encrypted BLE config channel without changing Wi-Fi settings. Use a PAT with `read_api`; `--url` selects a self-managed instance and defaults to `https://gitlab.com`. The ESP32 stores the URL and PAT in NVS, uses the already-provisioned Wi-Fi, and polls GitLab directly every 60 seconds. It applies the same review buckets as `gitlab-cosmic-applet`, displays up to five needs-review items, and detects newly appearing IDs locally. GitLab HTTP 401 or 403 responses switch the screen to **Reauthenticate** until a valid PAT is provisioned.
+
+Settings > Screens contains persistent toggles for the Agents roster, Merge Requests, and Printer + AMS pages. A change is committed to NVS and immediately restarts the device. On the next boot, disabled tiles are not created and their polling, timers, BLE payload handling, and cloud workers are not started. The Settings page and primary agent dial are always enabled.
+
 ## Display Constraints
 
 The screen is a **466x466 circular AMOLED**. The corners of the square coordinate system are outside the visible circle. Place UI elements within the safe area.

@@ -1,8 +1,8 @@
 # Agent Viewer
 
-A BLE-connected desktop AI agent status monitor for the **Waveshare ESP32-S3-Touch-AMOLED-1.75**.
+A BLE-connected desktop status monitor for the **Waveshare ESP32-S3-Touch-AMOLED-1.75**.
 
-It displays AI coding agent state on a 1.75" circular AMOLED screen with animated visuals, a status ring, touch interaction, a multi-instance roster for Claude and Codex sessions, and Bambu P2S printer and AMS status pages.
+It displays AI coding agent state on a 1.75" circular AMOLED screen with animated visuals, a status ring, touch interaction, a multi-instance roster for Claude and Codex sessions, GitLab merge requests that need review, and Bambu P2S printer and AMS status pages.
 
 ## Hardware
 
@@ -21,11 +21,12 @@ It displays AI coding agent state on a 1.75" circular AMOLED screen with animate
 - **Status ring** - color-coded ring around the screen edge
 - **Multi-instance dashboard** - one focused newest agent plus a scrollable roster
 - **Bambu P2S status** - display-only cloud printer state with a PrintSphere-inspired progress ring, ETA, layers, temps, material, and AMS tray view
+- **GitLab review monitor** - device-side HTTPS polling with a provisioned read-only PAT, a needs-review list, and a blinking ring when a new review appears
 - **Bambu Wi-Fi fallback** - ESP32 can use provisioned Wi-Fi plus Bambu Cloud config when BLE drops, keeping printer cloud mode enabled
 - **Claude/Codex labels** - main and Agents screens identify the coding CLI for each session
 - **Touch interaction** - tap to acknowledge alerts
-- **Swipe navigation** - swipe down for Agents, right for Settings, and through to Printer status
-- **Settings screen** - display brightness, BLE connection status, battery status
+- **Swipe navigation** - swipe down for Agents, then right through Merge Requests, Printer, and Settings
+- **Settings screen** - display brightness, BLE/Wi-Fi status, battery status, orientation lock, and persistent screen toggles
 - **BLE GATT server** - receives state updates from a PC daemon
 - **Battery monitoring** - via AXP2101 PMIC
 
@@ -41,16 +42,14 @@ It displays AI coding agent state on a 1.75" circular AMOLED screen with animate
 ## Architecture
 
 ```
-Claude/Codex CLI hooks       Bambu Cloud MQTT
-	|
-		v
-agent-viewer hook -> /tmp/agent-viewer.sock -> agent-viewer daemon
-	        |
-	        v
-ESP32-S3 BLE GATT server -> LVGL UI
+Claude/Codex hooks -> agent-viewer daemon -> ESP32-S3 BLE --\
+GitLab HTTPS API -----------------------> ESP32-S3 Wi-Fi ----+-> LVGL UI
+Bambu Cloud MQTT ----------------------> ESP32-S3 Wi-Fi ----/
 ```
 
-The host daemon aggregates active Claude and Codex sessions, reads available usage stats, connects to Bambu Cloud MQTT only while the ESP32 is connected over BLE, and sends compact updates to the ESP32 over BLE. Printer and AMS updates are forwarded when Bambu MQTT reports arrive, cached printer/AMS status is sent on BLE reconnect, and the 30 second Bambu ticker only requests a fresh `pushall` snapshot and checks for stale cloud data. If BLE disconnects, the daemon closes its Bambu Cloud connection and the ESP32 can use its provisioned Wi-Fi/Bambu Cloud fallback directly.
+Wi-Fi is provisioned separately with `wifi-setup`. The host binary's `gitlab-setup` command sends only the GitLab URL and PAT to the paired device over encrypted BLE. The ESP32 stores them in NVS and polls GitLab directly every 60 seconds, whether or not the host daemon is connected. Existing GitLab reviews establish the baseline; a newly appearing needs-review ID blinks the ring until the Merge Requests screen is opened. A rejected or insufficiently scoped PAT produces a **Reauthenticate** state on the screen. The daemon still aggregates Claude/Codex sessions and supplies Bambu state while BLE is connected; the device-side Bambu fallback uses the same Wi-Fi connection when BLE is absent.
+
+The Settings > Screens page can disable the Agents roster, Merge Requests, or Printer + AMS pages. Changing a toggle restarts the device so the disabled page and its background processing are omitted cleanly. Settings and the primary agent dial remain available.
 
 ## Development
 
@@ -77,6 +76,9 @@ waveshare-clock/
 │   ├── agent_ams/              # Bambu AMS tray screen
 │   ├── agent_pmic/             # AXP2101 PMIC driver
 │   ├── agent_bambu/            # ESP32 Wi-Fi/Bambu Cloud fallback
+│   ├── agent_features/         # Persistent optional-screen feature flags
+│   ├── agent_gitlab/           # Device-side GitLab HTTPS client
+│   ├── agent_merge_requests/   # GitLab review screen
 │   ├── agent_printer/          # Bambu P2S printer screen
 │   └── agent_viewer/           # LVGL tile shell and agent screens
 ├── host/                       # PC-side agent-viewer utility and helpers

@@ -17,6 +17,8 @@
 
 #include "agent_bambu.hpp"
 #include "agent_ble.hpp"
+#include "agent_features.hpp"
+#include "agent_gitlab.hpp"
 
 static const char *TAG = "agent_bambu";
 
@@ -165,26 +167,26 @@ static bool load_config(void)
         }
     }
 
-    bool ok = nvs_get_str_fixed(h, "mqtt", cfg->mqtt_broker, sizeof(cfg->mqtt_broker)) &&
-              nvs_get_str_fixed(h, "token", cfg->access_token, sizeof(cfg->access_token)) &&
-              nvs_get_str_fixed(h, "user", cfg->user_id, sizeof(cfg->user_id)) &&
-              nvs_get_str_fixed(h, "device", cfg->device_id, sizeof(cfg->device_id)) &&
-              cfg->network_count > 0;
+    nvs_get_str_fixed(h, "mqtt", cfg->mqtt_broker, sizeof(cfg->mqtt_broker));
+    nvs_get_str_fixed(h, "token", cfg->access_token, sizeof(cfg->access_token));
+    nvs_get_str_fixed(h, "user", cfg->user_id, sizeof(cfg->user_id));
+    nvs_get_str_fixed(h, "device", cfg->device_id, sizeof(cfg->device_id));
     nvs_get_str_fixed(h, "region", cfg->region, sizeof(cfg->region));
     nvs_get_str_fixed(h, "name", cfg->device_name, sizeof(cfg->device_name));
     nvs_close(h);
 
-    if (ok) {
-        s_config = *cfg;
-        s_configured = true;
+    s_config = *cfg;
+    s_configured = config_has_cloud(&s_config);
+    if (cfg->network_count > 0) {
         if (s_wifi_index < 0 || s_wifi_index >= s_config.network_count) s_wifi_index = 0;
-        set_status(AGENT_BAMBU_STANDBY, "BLE primary");
+        set_status(s_configured ? AGENT_BAMBU_STANDBY : AGENT_BAMBU_NOT_CONFIGURED,
+                   s_configured ? "BLE primary" : "Printer not configured");
     } else {
-        s_configured = false;
         set_status(AGENT_BAMBU_NOT_CONFIGURED, "Not configured");
     }
+    bool has_wifi = cfg->network_count > 0;
     free(cfg);
-    return ok;
+    return has_wifi;
 }
 
 static bool json_string(cJSON *root, const char *key, char *dst, size_t dst_size, bool required)
@@ -249,10 +251,10 @@ static bool save_config_json(const char *json)
               json_string(root, "wifi_password", wifi_password, sizeof(wifi_password), true) &&
               upsert_network(cfg, ssid, wifi_password) &&
               json_string(root, "region", cfg->region, sizeof(cfg->region), false) &&
-              json_string(root, "mqtt_broker", cfg->mqtt_broker, sizeof(cfg->mqtt_broker), true) &&
-              json_string(root, "access_token", cfg->access_token, sizeof(cfg->access_token), true) &&
-              json_string(root, "user_id", cfg->user_id, sizeof(cfg->user_id), true) &&
-              json_string(root, "device_id", cfg->device_id, sizeof(cfg->device_id), true) &&
+              json_string(root, "mqtt_broker", cfg->mqtt_broker, sizeof(cfg->mqtt_broker), false) &&
+              json_string(root, "access_token", cfg->access_token, sizeof(cfg->access_token), false) &&
+              json_string(root, "user_id", cfg->user_id, sizeof(cfg->user_id), false) &&
+              json_string(root, "device_id", cfg->device_id, sizeof(cfg->device_id), false) &&
               json_string(root, "device_name", cfg->device_name, sizeof(cfg->device_name), false);
     cJSON_Delete(root);
     if (!ok) {
@@ -326,7 +328,7 @@ static void init_wifi_once(void)
 
 static void start_wifi(void)
 {
-    if (!s_configured || s_wifi_started || s_config.network_count == 0) return;
+    if (s_wifi_started || s_config.network_count == 0) return;
     init_wifi_once();
     if (s_wifi_index < 0 || s_wifi_index >= s_config.network_count) s_wifi_index = 0;
 
@@ -633,7 +635,17 @@ static void bambu_task(void *arg)
 {
     int push_ticks = 0;
     while (1) {
-        if (!s_configured) {
+        bool printer_enabled = agent_feature_is_enabled(AGENT_FEATURE_PRINTER);
+        bool gitlab_enabled = agent_feature_is_enabled(AGENT_FEATURE_GITLAB);
+        bool needs_wifi = gitlab_enabled || (!g_ble_connected && printer_enabled);
+        if (!needs_wifi) {
+            stop_mqtt();
+            stop_wifi();
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+
+        if (s_config.network_count == 0) {
             load_config();
             vTaskDelay(pdMS_TO_TICKS(2000));
             continue;
@@ -641,7 +653,11 @@ static void bambu_task(void *arg)
 
         if (g_ble_connected) {
             stop_mqtt();
-            stop_wifi();
+            if (agent_gitlab_is_configured()) {
+                if (!s_wifi_started) start_wifi();
+            } else {
+                stop_wifi();
+            }
             set_status(AGENT_BAMBU_STANDBY, "BLE primary");
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
@@ -650,7 +666,7 @@ static void bambu_task(void *arg)
         if (!s_wifi_started) {
             start_wifi();
         }
-        if (s_wifi_connected && !s_mqtt) {
+        if (printer_enabled && s_configured && s_wifi_connected && !s_mqtt) {
             start_mqtt();
         }
         if (s_cloud_connected && ++push_ticks >= 30) {
@@ -664,7 +680,12 @@ static void bambu_task(void *arg)
 void agent_bambu_init(void)
 {
     load_config();
-    agent_ble_set_config_handler(config_handler);
+    agent_ble_add_config_handler(config_handler);
+    if (!agent_feature_is_enabled(AGENT_FEATURE_PRINTER) &&
+        !agent_feature_is_enabled(AGENT_FEATURE_GITLAB)) {
+        ESP_LOGI(TAG, "Printer and GitLab screens disabled; cloud task stopped");
+        return;
+    }
     xTaskCreate(bambu_task, "bambu_cloud", 8192, NULL, 4, NULL);
 }
 
