@@ -548,7 +548,7 @@ static void create_screens_page(lv_obj_t *tile)
     page_screens = create_page(tile, true);
     create_back_button(page_screens);
     create_label(page_screens, "Screens", 38, &lv_font_montserrat_24, COLOR_CYAN);
-    create_screen_toggle(page_screens, "Agents", "Agent roster page", AGENT_FEATURE_AGENTS, 92);
+    create_screen_toggle(page_screens, "Agents", "Agent dial and roster", AGENT_FEATURE_AGENTS, 92);
     create_screen_toggle(page_screens, "Merge Requests", "GitLab polling and alerts", AGENT_FEATURE_GITLAB, 174);
     create_screen_toggle(page_screens, "Printer + AMS", "Bambu status processing", AGENT_FEATURE_PRINTER, 256);
 

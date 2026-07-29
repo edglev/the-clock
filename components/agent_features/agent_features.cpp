@@ -33,5 +33,6 @@ bool agent_feature_set_enabled(agent_feature_t feature, bool enabled)
     if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
     if (err != ESP_OK) return false;
+    s_enabled[feature] = enabled;
     return true;
 }

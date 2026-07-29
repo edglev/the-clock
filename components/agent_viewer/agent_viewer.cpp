@@ -264,7 +264,7 @@ static void tap_cb(lv_event_t *e) { agent_ble_notify_action(1); }
 
 static void set_status_ring_visible(bool visible)
 {
-    agent_ring_set_visible(status_ring, visible);
+    if (status_ring) agent_ring_set_visible(status_ring, visible);
 }
 
 static bool tileview_settled_on(lv_obj_t *tile)
@@ -479,42 +479,46 @@ static void timer_cb(lv_timer_t *t)
     update_orientation_transform();
     agent_ble_idle_stale_waiting(WAITING_AUTO_IDLE_MS);
 
-    bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused_timer);
+    if (status_ring) {
+        bool has_focus = g_ble_connected && agent_ble_get_focused_instance(&focused_timer);
 
-    lv_color_t ring_color;
-    if (!has_focus) {
-        ring_color = lv_color_hex(0x555555);
-    } else {
-        switch (focused_timer.state) {
-        case AGENT_STATE_IDLE:    ring_color = lv_color_hex(COLOR_CYAN); break;
-        case AGENT_STATE_THINKING: ring_color = lv_color_hex(0x9933FF); break;
-        case AGENT_STATE_WAITING:
-            ring_color = (waiting_blink_active(&focused_timer) && (rot_angle / 15 % 2 != 0)) ?
-                         lv_color_hex(0xFF0000) : lv_color_hex(0xFFAA00);
-            break;
-        case AGENT_STATE_SUCCESS:  ring_color = lv_color_hex(0x00FF00); break;
-        default:                   ring_color = lv_color_hex(COLOR_CYAN); break;
+        lv_color_t ring_color;
+        if (!has_focus) {
+            ring_color = lv_color_hex(0x555555);
+        } else {
+            switch (focused_timer.state) {
+            case AGENT_STATE_IDLE:    ring_color = lv_color_hex(COLOR_CYAN); break;
+            case AGENT_STATE_THINKING: ring_color = lv_color_hex(0x9933FF); break;
+            case AGENT_STATE_WAITING:
+                ring_color = (waiting_blink_active(&focused_timer) && (rot_angle / 15 % 2 != 0)) ?
+                             lv_color_hex(0xFF0000) : lv_color_hex(0xFFAA00);
+                break;
+            case AGENT_STATE_SUCCESS:  ring_color = lv_color_hex(0x00FF00); break;
+            default:                   ring_color = lv_color_hex(COLOR_CYAN); break;
+            }
         }
+        if (agent_merge_requests_has_unseen()) {
+            ring_color = agent_merge_requests_alert_on() ? lv_color_hex(0xFFFFFF) : lv_color_hex(0xFC6D26);
+        }
+        lv_obj_set_style_arc_color(status_ring, ring_color, LV_PART_INDICATOR);
     }
-    if (agent_merge_requests_has_unseen()) {
-        ring_color = agent_merge_requests_alert_on() ? lv_color_hex(0xFFFFFF) : lv_color_hex(0xFC6D26);
-    }
-    lv_obj_set_style_arc_color(status_ring, ring_color, LV_PART_INDICATOR);
 
     bool tile_scrolling = tileview && lv_obj_is_scrolling(tileview);
     if (!tile_scrolling) {
         update_ring_visibility();
-        update_canvas();
-        update_header();
-        if (agent_feature_is_enabled(AGENT_FEATURE_AGENTS) && ++instances_refresh_tick >= 20) {
-            instances_refresh_tick = 0;
-            update_instances_page();
+        if (tile_agent) {
+            update_canvas();
+            update_header();
+            if (++instances_refresh_tick >= 20) {
+                instances_refresh_tick = 0;
+                update_instances_page();
+            }
         }
-        if (agent_feature_is_enabled(AGENT_FEATURE_PRINTER)) {
+        if (tile_printer) {
             agent_printer_timer_update();
             agent_ams_timer_update();
         }
-        if (agent_feature_is_enabled(AGENT_FEATURE_GITLAB)) {
+        if (tile_merge_requests) {
             agent_merge_requests_timer_update();
         }
         agent_settings_timer_update();
@@ -544,25 +548,31 @@ static lv_obj_t *create_nav_hint(lv_obj_t *parent, const char *symbol, lv_align_
 
 static void create_page_indicators(void)
 {
-    if (tile_instances) create_nav_hint(tile_agent, LV_SYMBOL_DOWN, LV_ALIGN_BOTTOM_MID, 0, -NAV_HINT_EDGE_OFFSET);
-    create_nav_hint(tile_agent, LV_SYMBOL_RIGHT, LV_ALIGN_RIGHT_MID, -NAV_HINT_EDGE_OFFSET, 0);
+    if (tile_agent) {
+        if (tile_instances) create_nav_hint(tile_agent, LV_SYMBOL_DOWN, LV_ALIGN_BOTTOM_MID, 0, -NAV_HINT_EDGE_OFFSET);
+        create_nav_hint(tile_agent, LV_SYMBOL_RIGHT, LV_ALIGN_RIGHT_MID, -NAV_HINT_EDGE_OFFSET, 0);
+    }
 
     if (tile_instances) create_nav_hint(tile_instances, LV_SYMBOL_UP, LV_ALIGN_TOP_MID, 0, NAV_HINT_EDGE_OFFSET);
 
     if (tile_merge_requests) {
-        create_nav_hint(tile_merge_requests, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
+        if (tile_agent) create_nav_hint(tile_merge_requests, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
         create_nav_hint(tile_merge_requests, LV_SYMBOL_RIGHT, LV_ALIGN_RIGHT_MID, -NAV_HINT_EDGE_OFFSET, 0);
     }
 
     if (tile_printer) {
-        create_nav_hint(tile_printer, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
+        if (tile_agent || tile_merge_requests) {
+            create_nav_hint(tile_printer, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
+        }
         create_nav_hint(tile_printer, LV_SYMBOL_RIGHT, LV_ALIGN_RIGHT_MID, -NAV_HINT_EDGE_OFFSET, 0);
         create_nav_hint(tile_printer, LV_SYMBOL_DOWN, LV_ALIGN_BOTTOM_MID, 0, -NAV_HINT_EDGE_OFFSET);
     }
 
     if (tile_ams) create_nav_hint(tile_ams, LV_SYMBOL_UP, LV_ALIGN_TOP_MID, 0, NAV_HINT_EDGE_OFFSET);
 
-    create_nav_hint(tile_settings, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
+    if (tile_agent || tile_merge_requests || tile_printer) {
+        create_nav_hint(tile_settings, LV_SYMBOL_LEFT, LV_ALIGN_LEFT_MID, NAV_HINT_EDGE_OFFSET, 0);
+    }
 }
 
 static void create_status_ring(lv_obj_t *parent)
@@ -732,30 +742,34 @@ void agent_viewer_init(void)
     bool gitlab_enabled = agent_feature_is_enabled(AGENT_FEATURE_GITLAB);
     bool printer_enabled = agent_feature_is_enabled(AGENT_FEATURE_PRINTER);
 
-    lv_dir_t agent_dirs = agents_enabled ? (lv_dir_t)(LV_DIR_RIGHT | LV_DIR_BOTTOM) : LV_DIR_RIGHT;
-    tile_agent = lv_tileview_add_tile(tileview, 0, 0, agent_dirs);
-    lv_obj_set_style_bg_opa(tile_agent, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(tile_agent, 0, 0);
-    create_status_ring(tile_agent);
-    create_page_agent(tile_agent);
-
+    int column = 0;
     if (agents_enabled) {
-        tile_instances = lv_tileview_add_tile(tileview, 0, 1, LV_DIR_TOP);
+        tile_agent = lv_tileview_add_tile(tileview, column, 0, (lv_dir_t)(LV_DIR_RIGHT | LV_DIR_BOTTOM));
+        lv_obj_set_style_bg_opa(tile_agent, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(tile_agent, 0, 0);
+        create_status_ring(tile_agent);
+        create_page_agent(tile_agent);
+
+        tile_instances = lv_tileview_add_tile(tileview, column, 1, LV_DIR_TOP);
         lv_obj_set_style_bg_opa(tile_instances, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(tile_instances, 0, 0);
         create_page_instances(tile_instances);
+        column++;
     }
 
-    int column = 1;
     if (gitlab_enabled) {
-        tile_merge_requests = lv_tileview_add_tile(tileview, column++, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT));
+        lv_dir_t dirs = column > 0 ? (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT) : LV_DIR_RIGHT;
+        tile_merge_requests = lv_tileview_add_tile(tileview, column++, 0, dirs);
         lv_obj_set_style_bg_opa(tile_merge_requests, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(tile_merge_requests, 0, 0);
         agent_merge_requests_create(tile_merge_requests);
     }
 
     if (printer_enabled) {
-        tile_printer = lv_tileview_add_tile(tileview, column, 0, (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT | LV_DIR_BOTTOM));
+        lv_dir_t dirs = column > 0
+                            ? (lv_dir_t)(LV_DIR_LEFT | LV_DIR_RIGHT | LV_DIR_BOTTOM)
+                            : (lv_dir_t)(LV_DIR_RIGHT | LV_DIR_BOTTOM);
+        tile_printer = lv_tileview_add_tile(tileview, column, 0, dirs);
         lv_obj_set_style_bg_opa(tile_printer, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(tile_printer, 0, 0);
         agent_printer_create(tile_printer);
@@ -767,24 +781,30 @@ void agent_viewer_init(void)
         column++;
     }
 
-    tile_settings = lv_tileview_add_tile(tileview, column, 0, LV_DIR_LEFT);
+    lv_dir_t settings_dirs = column > 0 ? LV_DIR_LEFT : LV_DIR_NONE;
+    tile_settings = lv_tileview_add_tile(tileview, column, 0, settings_dirs);
     lv_obj_set_style_bg_opa(tile_settings, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(tile_settings, 0, 0);
     agent_settings_create(tile_settings);
 
     create_page_indicators();
-    lv_tileview_set_tile(tileview, tile_agent, LV_ANIM_OFF);
+    lv_obj_t *initial_tile = tile_agent ? tile_agent :
+                             tile_merge_requests ? tile_merge_requests :
+                             tile_printer ? tile_printer : tile_settings;
+    lv_tileview_set_tile(tileview, initial_tile, LV_ANIM_OFF);
     update_ring_visibility();
 
     lv_obj_add_flag(tileview, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(tileview, tap_cb, LV_EVENT_CLICKED, NULL);
+    if (agents_enabled) lv_obj_add_event_cb(tileview, tap_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_event_cb(tileview, tileview_scroll_cb, LV_EVENT_SCROLL_BEGIN, NULL);
     lv_obj_add_event_cb(tileview, tileview_scroll_cb, LV_EVENT_SCROLL_END, NULL);
 
     lv_timer_create(timer_cb, 25, NULL);
-    update_canvas();
-    update_header();
-    if (agents_enabled) update_instances_page();
+    if (agents_enabled) {
+        update_canvas();
+        update_header();
+        update_instances_page();
+    }
     if (gitlab_enabled) agent_merge_requests_timer_update();
     if (printer_enabled) {
         agent_printer_timer_update();

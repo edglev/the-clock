@@ -49,7 +49,7 @@ Bambu Cloud MQTT ----------------------> ESP32-S3 Wi-Fi ----/
 
 Wi-Fi is provisioned separately with `wifi-setup`. The host binary's `gitlab-setup` command sends only the GitLab URL and PAT to the paired device over encrypted BLE. The ESP32 stores them in NVS and polls GitLab directly every 60 seconds, whether or not the host daemon is connected. Existing GitLab reviews establish the baseline; a newly appearing needs-review ID blinks the ring until the Merge Requests screen is opened. A rejected or insufficiently scoped PAT produces a **Reauthenticate** state on the screen. The daemon still aggregates Claude/Codex sessions and supplies Bambu state while BLE is connected; the device-side Bambu fallback uses the same Wi-Fi connection when BLE is absent.
 
-The Settings > Screens page can disable the Agents roster, Merge Requests, or Printer + AMS pages. Changing a toggle restarts the device so the disabled page and its background processing are omitted cleanly. Settings and the primary agent dial remain available.
+The Settings > Screens page can disable the primary agent dial and Agents roster, Merge Requests, or Printer + AMS pages. Changing a toggle restarts the device so the disabled pages and their background processing are omitted cleanly. Settings always remains available.
 
 ## Development
 
